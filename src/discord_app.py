@@ -90,34 +90,15 @@ class NikaDiscordClient(discord.Client):
             if auto_action in {"react", "reply", "short_interject", "contextual_reply", "sarcastic_comment", "playful_question", "meme_reply"}:
                 try:
                     result = await self.executor.execute(message, auto)
-
-                    # Visible interjection for reply-style actions
                     if auto_action in {"reply", "short_interject", "contextual_reply", "sarcastic_comment", "playful_question", "meme_reply"} and result.get("kind") == "reply" and result.get("text"):
                         reply_text = strip_output_labels(clean_response(result.get("text", "")) or result.get("text", "").strip())
                         if reply_text:
                             await self.executor.safe_reply(message, reply_text)
                             self.store.add_message(channel_id, guild_id, "assistant", str(self.user.id) if self.user else "", self.settings.bot_name, reply_text)
-
-                    elif result.get("kind") == "status" and result.get("text") and auto_action == "react":
-                        # We don't log a message for a reaction status, just execute it
-                        pass
-
-                    # Mark cooldown after autonomous intervention.
                     current_meta = self.store.get_channel_meta(channel_id) or {}
-                    msg_count = 0
-                    if isinstance(current_meta, dict):
-                        msg_count = int(current_meta.get("message_count") or 0)
-                    else:
-                        try: msg_count = int(current_meta["message_count"] or 0)
-                        except Exception: pass
-
-                    self.store.record_autonomy_state(
-                        channel_id,
-                        count=msg_count,
-                        interjection_type=auto_action or "",
-                    )
-                except Exception as e:
-                    print(f"[AUTONOMY ERROR] {e}")
+                    msg_count = int(current_meta.get("message_count") or 0) if isinstance(current_meta, dict) else int(current_meta["message_count"] or 0)
+                    self.store.record_autonomy_state(channel_id, count=msg_count, interjection_type=auto_action)
+                except Exception as e: print(f"[AUTONOMY ERROR] {e}")
             return
 
         async with message.channel.typing():
