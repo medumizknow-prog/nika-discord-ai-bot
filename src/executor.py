@@ -207,6 +207,7 @@ class ActionExecutor:
                 str(message.channel.id),
                 target_channel_id=str(channel.id),
                 limit=limit,
+                anchor_message_id=first_message_id, # Oldest of current batch is anchor for "earlier"
                 first_message_id=first_message_id,
                 last_message_id=last_message_id,
             )
@@ -216,6 +217,7 @@ class ActionExecutor:
                 "channel_id": str(channel.id),
                 "channel_name": channel.name,
                 "text": "\n".join(f"{item['author']}: {item['text']}" for item in items),
+                "anchor_message_id": first_message_id,
                 "first_message_id": first_message_id,
                 "last_message_id": last_message_id,
                 "limit": limit,

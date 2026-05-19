@@ -106,10 +106,10 @@ class NikaDiscordClient(discord.Client):
 
                     # Mark cooldown after autonomous intervention.
                     current_meta = self.store.get_channel_meta(channel_id) or {}
-                    self.store.update_channel_meta(
+                    self.store.record_autonomy_state(
                         channel_id,
-                        last_autonomy_count=int(current_meta.get("message_count") or 0),
-                        last_interjection_type=auto.get("action") or "",
+                        count=int(current_meta.get("message_count") or 0),
+                        interjection_type=auto.get("action") or "",
                     )
                 except Exception as e:
                     print(f"[AUTONOMY ERROR] {e}")
