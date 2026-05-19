@@ -90,15 +90,11 @@ class MemoryStore:
             username TEXT DEFAULT '',
             display_name TEXT DEFAULT '',
             summary TEXT DEFAULT '',
-            interests TEXT DEFAULT '',
-            communication_style TEXT DEFAULT '',
             traits TEXT DEFAULT '',
             relationship TEXT DEFAULT '',
             relationship_trend TEXT DEFAULT '',
             opinion TEXT DEFAULT '',
             topics TEXT DEFAULT '',
-            activity_level TEXT DEFAULT '',
-            behaviors TEXT DEFAULT '',
             notes TEXT DEFAULT '',
             affinity INTEGER DEFAULT 0,
             messages_seen INTEGER DEFAULT 0,
@@ -205,7 +201,7 @@ class MemoryStore:
         cols = {r["name"] for r in self.cur.execute("PRAGMA table_info(user_cards)").fetchall()}
         for col in [
             "personality_traits", "humor_style", "toxicity_level", "friendliness",
-            "inside_jokes", "nicknames", "bot_opinion", "confidence_score"
+            "inside_jokes", "nicknames", "bot_opinion", "confidence_score", "recurring_topics"
         ]:
             if col not in cols:
                 self.cur.execute(f"ALTER TABLE user_cards ADD COLUMN {col} TEXT DEFAULT ''")
@@ -342,15 +338,11 @@ class MemoryStore:
             "username",
             "display_name",
             "summary",
-            "interests",
-            "communication_style",
             "traits",
             "relationship",
             "relationship_trend",
             "opinion",
             "topics",
-            "activity_level",
-            "behaviors",
             "notes",
             "affinity",
             "messages_seen",
@@ -362,7 +354,8 @@ class MemoryStore:
             "inside_jokes",
             "nicknames",
             "bot_opinion",
-            "confidence_score"
+            "confidence_score",
+            "recurring_topics"
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
@@ -649,10 +642,6 @@ class MemoryStore:
         if user_card:
             if user_card.get("summary"):
                 lines.append(f"Карточка: {user_card['summary']}")
-            if user_card.get("interests"):
-                lines.append(f"Интересы: {user_card['interests']}")
-            if user_card.get("communication_style"):
-                lines.append(f"Стиль общения: {user_card['communication_style']}")
             if user_card.get("traits"):
                 lines.append(f"Карточка-черты: {user_card['traits']}")
             if user_card.get("relationship"):
@@ -663,10 +652,6 @@ class MemoryStore:
                 lines.append(f"Мнение Nika: {user_card['opinion']}")
             if user_card.get("topics"):
                 lines.append(f"Темы: {user_card['topics']}")
-            if user_card.get("activity_level"):
-                lines.append(f"Активность: {user_card['activity_level']}")
-            if user_card.get("behaviors"):
-                lines.append(f"Поведение: {user_card['behaviors']}")
             if user_card.get("notes"):
                 lines.append(f"Карточка-заметки: {user_card['notes']}")
             if user_card.get("messages_seen") is not None:
