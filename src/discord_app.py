@@ -86,30 +86,35 @@ class NikaDiscordClient(discord.Client):
 
         if not engage:
             auto = await self.planner.run_autonomy(message)
-            if auto.get("action") in {"react", "post_thought", "reply"}:
+            auto_action = auto.get("action")
+            if auto_action in {"react", "reply", "short_interject", "contextual_reply", "sarcastic_comment", "playful_question", "meme_reply"}:
                 try:
                     result = await self.executor.execute(message, auto)
 
-                    # Silent autonomy for react/post_thought, visible interjection for reply.
-                    if auto.get("action") == "reply" and result.get("kind") == "reply" and result.get("text"):
+                    # Visible interjection for reply-style actions
+                    if auto_action in {"reply", "short_interject", "contextual_reply", "sarcastic_comment", "playful_question", "meme_reply"} and result.get("kind") == "reply" and result.get("text"):
                         reply_text = strip_output_labels(clean_response(result.get("text", "")) or result.get("text", "").strip())
                         if reply_text:
                             await self.executor.safe_reply(message, reply_text)
                             self.store.add_message(channel_id, guild_id, "assistant", str(self.user.id) if self.user else "", self.settings.bot_name, reply_text)
 
-                    elif result.get("kind") == "status" and result.get("text") and auto.get("action") in {"react", "post_thought"}:
-                        self.store.add_message(channel_id, guild_id, "assistant", str(self.user.id) if self.user else "", self.settings.bot_name, result["text"])
-
-                    elif result.get("kind") == "status" and result.get("text"):
-                        # Future non-silent autonomous actions may use this.
-                        self.store.add_message(channel_id, guild_id, "assistant", str(self.user.id) if self.user else "", self.settings.bot_name, result["text"])
+                    elif result.get("kind") == "status" and result.get("text") and auto_action == "react":
+                        # We don't log a message for a reaction status, just execute it
+                        pass
 
                     # Mark cooldown after autonomous intervention.
                     current_meta = self.store.get_channel_meta(channel_id) or {}
+                    msg_count = 0
+                    if isinstance(current_meta, dict):
+                        msg_count = int(current_meta.get("message_count") or 0)
+                    else:
+                        try: msg_count = int(current_meta["message_count"] or 0)
+                        except Exception: pass
+
                     self.store.record_autonomy_state(
                         channel_id,
-                        count=int(current_meta.get("message_count") or 0),
-                        interjection_type=auto.get("action") or "",
+                        count=msg_count,
+                        interjection_type=auto_action or "",
                     )
                 except Exception as e:
                     print(f"[AUTONOMY ERROR] {e}")
