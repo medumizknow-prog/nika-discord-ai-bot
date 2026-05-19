@@ -75,10 +75,15 @@ class MemoryStore:
             username TEXT DEFAULT '',
             display_name TEXT DEFAULT '',
             summary TEXT DEFAULT '',
+            interests TEXT DEFAULT '',
+            communication_style TEXT DEFAULT '',
             traits TEXT DEFAULT '',
             relationship TEXT DEFAULT '',
+            relationship_trend TEXT DEFAULT '',
             opinion TEXT DEFAULT '',
             topics TEXT DEFAULT '',
+            activity_level TEXT DEFAULT '',
+            behaviors TEXT DEFAULT '',
             notes TEXT DEFAULT '',
             affinity INTEGER DEFAULT 0,
             messages_seen INTEGER DEFAULT 0,
@@ -147,6 +152,7 @@ class MemoryStore:
         CREATE TABLE IF NOT EXISTS channel_meta (
             channel_id TEXT PRIMARY KEY,
             summary TEXT DEFAULT '',
+            summary_timestamp DATETIME,
             message_count INTEGER DEFAULT 0,
             last_summary_count INTEGER DEFAULT 0,
             mood TEXT DEFAULT 'calm',
@@ -158,25 +164,50 @@ class MemoryStore:
             last_reaction TEXT DEFAULT '',
             last_bot_post_count INTEGER DEFAULT 0,
             last_read_limit INTEGER DEFAULT 0,
+            last_read_anchor_message_id TEXT DEFAULT '',
             last_read_first_message_id TEXT DEFAULT '',
             last_read_last_message_id TEXT DEFAULT '',
             last_read_summary TEXT DEFAULT '',
             last_autonomy_count INTEGER DEFAULT 0,
             last_autonomy_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_interjection_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_emoji_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             last_interjection_type TEXT DEFAULT '',
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
-        self._ensure_column("channel_meta", "last_autonomy_at TEXT")
+
+        # migrations for older DBs
+        self._ensure_column("channel_meta", "summary_timestamp TEXT")
+        self._ensure_column("channel_meta", "last_read_anchor_message_id TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_interjection_at TEXT")
+        self._ensure_column("channel_meta", "last_emoji_at TEXT")
 
         self.cur.execute("""
         UPDATE channel_meta
         SET last_autonomy_at = CURRENT_TIMESTAMP
         WHERE last_autonomy_at IS NULL OR last_autonomy_at = ''
         """)
+        self.cur.execute("""
+        UPDATE channel_meta
+        SET last_interjection_at = CURRENT_TIMESTAMP
+        WHERE last_interjection_at IS NULL OR last_interjection_at = ''
+        """)
+        self.cur.execute("""
+        UPDATE channel_meta
+        SET last_emoji_at = CURRENT_TIMESTAMP
+        WHERE last_emoji_at IS NULL OR last_emoji_at = ''
+        """)
         self.db.commit()
 
-        # migrations for older DBs
+        # user_cards migrations
+        self._ensure_column("user_cards", "interests TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "communication_style TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
+
+        # other channel_meta migrations
         self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
         self._ensure_column("channel_meta", "last_reaction TEXT DEFAULT ''")
         self._ensure_column("channel_meta", "last_read_limit INTEGER DEFAULT 0")
@@ -312,10 +343,15 @@ class MemoryStore:
             "username",
             "display_name",
             "summary",
+            "interests",
+            "communication_style",
             "traits",
             "relationship",
+            "relationship_trend",
             "opinion",
             "topics",
+            "activity_level",
+            "behaviors",
             "notes",
             "affinity",
             "messages_seen",
@@ -606,14 +642,24 @@ class MemoryStore:
         if user_card:
             if user_card.get("summary"):
                 lines.append(f"Карточка: {user_card['summary']}")
+            if user_card.get("interests"):
+                lines.append(f"Интересы: {user_card['interests']}")
+            if user_card.get("communication_style"):
+                lines.append(f"Стиль общения: {user_card['communication_style']}")
             if user_card.get("traits"):
                 lines.append(f"Карточка-черты: {user_card['traits']}")
             if user_card.get("relationship"):
                 lines.append(f"Карточка-связь: {user_card['relationship']}")
+            if user_card.get("relationship_trend"):
+                lines.append(f"Тренд отношений: {user_card['relationship_trend']}")
             if user_card.get("opinion"):
                 lines.append(f"Мнение Nika: {user_card['opinion']}")
             if user_card.get("topics"):
                 lines.append(f"Темы: {user_card['topics']}")
+            if user_card.get("activity_level"):
+                lines.append(f"Активность: {user_card['activity_level']}")
+            if user_card.get("behaviors"):
+                lines.append(f"Поведение: {user_card['behaviors']}")
             if user_card.get("notes"):
                 lines.append(f"Карточка-заметки: {user_card['notes']}")
             if user_card.get("messages_seen") is not None:
@@ -686,6 +732,7 @@ class MemoryStore:
     def update_channel_meta(self, channel_id: str, **fields: Any) -> None:
         allowed = {
             "summary",
+            "summary_timestamp",
             "message_count",
             "last_summary_count",
             "mood",
@@ -697,11 +744,14 @@ class MemoryStore:
             "last_reaction",
             "last_bot_post_count",
             "last_read_limit",
+            "last_read_anchor_message_id",
             "last_read_first_message_id",
             "last_read_last_message_id",
             "last_read_summary",
             "last_autonomy_count",
             "last_autonomy_at",
+            "last_interjection_at",
+            "last_emoji_at",
             "last_interjection_type",
             "updated_at",
         }
@@ -732,6 +782,7 @@ class MemoryStore:
         *,
         target_channel_id: str = "",
         limit: int = 0,
+        anchor_message_id: str = "",
         first_message_id: str = "",
         last_message_id: str = "",
     ) -> None:
@@ -740,6 +791,7 @@ class MemoryStore:
             last_action_type="read_channel",
             last_target_channel_id=target_channel_id or "",
             last_read_limit=int(limit or 0),
+            last_read_anchor_message_id=anchor_message_id or "",
             last_read_first_message_id=first_message_id or "",
             last_read_last_message_id=last_message_id or "",
         )
@@ -752,10 +804,19 @@ class MemoryStore:
         count: int = 0,
         interjection_type: str = "",
     ) -> None:
-        self.update_channel_meta(
-            channel_id,
-            last_action_type=action_type or "",
-            last_autonomy_count=int(count or 0),
-            last_autonomy_at="CURRENT_TIMESTAMP",
-            last_interjection_type=interjection_type or "",
-        )
+        import datetime
+        now_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        updates = {
+            "last_autonomy_count": int(count or 0),
+            "last_autonomy_at": now_ts,
+            "last_interjection_type": interjection_type or "",
+        }
+        if action_type:
+            updates["last_action_type"] = action_type
+        if interjection_type in {"reply", "short_interject", "contextual_reply"}:
+            updates["last_interjection_at"] = now_ts
+        elif interjection_type == "react":
+            updates["last_emoji_at"] = now_ts
+
+        self.update_channel_meta(channel_id, **updates)
