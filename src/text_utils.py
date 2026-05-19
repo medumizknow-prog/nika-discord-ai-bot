@@ -5,8 +5,11 @@ from typing import Optional
 def normalize_compare_text(text: str) -> str:
     if not text:
         return ""
+    # Remove mentions, URLs, and non-alphanumeric chars (keep cyrillic)
+    text = re.sub(r"<@!?\d+>", "", text)
+    text = re.sub(r"https?://\S+", "", text)
     text = text.lower()
-    text = re.sub(r"[^\w\sа-яё]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[^a-zа-яё0-9\s]", "", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -16,11 +19,15 @@ def is_too_similar(a: str, b: str, threshold: float = 0.85) -> bool:
     nb = normalize_compare_text(b)
 
     if not na or not nb:
+        # If both are empty after normalization, they are effectively the same (filler)
+        if not (a or "").strip() and not (b or "").strip():
+            return True
         return False
 
     if na == nb:
         return True
 
+    # Check for inclusion with threshold
     if na in nb or nb in na:
         shorter = min(len(na), len(nb))
         longer = max(len(na), len(nb))
@@ -35,6 +42,26 @@ def is_too_similar(a: str, b: str, threshold: float = 0.85) -> bool:
         union = len(words_a | words_b)
         if union > 0 and (overlap / union) >= threshold:
             return True
+
+    return False
+
+
+def is_degenerate_response(text: str) -> bool:
+    if not text:
+        return True
+
+    clean = (text or "").strip().lower().strip(".!? ")
+    if not clean:
+        return True
+
+    # Filler garbage
+    fillers = {"мм", "ок", "ok", "м", "а", "э", "ну", "пнл", "поняла", "понял"}
+    if clean in fillers:
+        return True
+
+    # Too short
+    if len(clean) < 2 and not any(c.isdigit() for c in clean):
+        return True
 
     return False
 
@@ -117,7 +144,7 @@ def sanitize_summary_text(text: str) -> str:
     lines = []
     for line in text.splitlines():
         line = line.strip()
-        if len(line) < 2:
+        if line:
             lines.append(line)
 
     return "\n".join(lines).strip()
