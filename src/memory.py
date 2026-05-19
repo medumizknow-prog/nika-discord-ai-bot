@@ -804,15 +804,19 @@ class MemoryStore:
         count: int = 0,
         interjection_type: str = "",
     ) -> None:
+        import datetime
+        now_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
         updates = {
-            "last_action_type": action_type or "",
             "last_autonomy_count": int(count or 0),
-            "last_autonomy_at": "CURRENT_TIMESTAMP",
+            "last_autonomy_at": now_ts,
             "last_interjection_type": interjection_type or "",
         }
-        if interjection_type == "reply":
-            updates["last_interjection_at"] = "CURRENT_TIMESTAMP"
+        if action_type:
+            updates["last_action_type"] = action_type
+        if interjection_type in {"reply", "short_interject", "contextual_reply"}:
+            updates["last_interjection_at"] = now_ts
         elif interjection_type == "react":
-            updates["last_emoji_at"] = "CURRENT_TIMESTAMP"
+            updates["last_emoji_at"] = now_ts
 
         self.update_channel_meta(channel_id, **updates)
