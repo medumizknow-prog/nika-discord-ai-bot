@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
+import datetime
 from typing import Any, Dict, List
 
 import discord
@@ -154,40 +156,13 @@ class AgentPlanner:
         return any(
             p in low
             for p in [
-                "а еще",
-                "а ещё",
-                "еще",
-                "ещё",
-                "дальше",
-                "продолжай",
-                "что еще",
-                "что ещё",
-                "и еще",
-                "и ещё",
-                "еще раз",
-                "ещё раз",
-                "а что дальше",
-                "что дальше",
-                "подробнее",
-                "короткую сводку",
-                "сводку",
-                "что обсуждали",
-                "обсуждали",
-                "что там писали",
-                "что писали",
-                "о чем говорили",
-                "о чём говорили",
-                "что происходило",
-                "что было",
-                "расскажи что там было",
-                "расскажи что там",
-                "continue",
-                "more",
-                "what else",
-                "before that",
-                "earlier",
-                "до этого",
-                "раньше",
+                "а еще", "а ещё", "еще", "ещё", "дальше", "продолжай", "что еще", "что ещё",
+                "и еще", "и ещё", "еще раз", "ещё раз", "а что дальше", "что дальше",
+                "подробнее", "короткую сводку", "сводку", "что обсуждали", "обсуждали",
+                "что там писали", "что писали", "о чем говорили", "о чём говорили",
+                "что происходило", "что было", "расскажи что там было", "расскажи что там",
+                "continue", "more", "what else", "before that", "earlier", "до этого", "раньше",
+                "кто начал", "после этого", "до конфликта", "кто ответил", "что ответил"
             ]
         )
 
@@ -341,7 +316,7 @@ class AgentPlanner:
                     {"role": "user", "content": payload},
                 ],
                 temperature=0.2,
-                max_tokens=220,
+                max_tokens=350,
             )
         except Exception:
             return
@@ -350,66 +325,37 @@ class AgentPlanner:
             return
 
         summary = sanitize_summary_text(raw.get("summary") or "")
-        interests = sanitize_summary_text(raw.get("interests") or "")
-        communication_style = sanitize_summary_text(raw.get("communication_style") or "")
-        traits = sanitize_summary_text(raw.get("traits") or "")
+        personality_traits = sanitize_summary_text(raw.get("personality_traits") or "")
+        humor_style = sanitize_summary_text(raw.get("humor_style") or "")
+        toxicity_level = sanitize_summary_text(str(raw.get("toxicity_level") or ""))
+        friendliness = sanitize_summary_text(str(raw.get("friendliness") or ""))
         relationship = sanitize_summary_text(raw.get("relationship") or "")
         relationship_trend = sanitize_summary_text(raw.get("relationship_trend") or "")
-        opinion = sanitize_summary_text(raw.get("opinion") or "")
-        topics = sanitize_summary_text(raw.get("topics") or "")
-        activity_level = sanitize_summary_text(raw.get("activity_level") or "")
-        behaviors = sanitize_summary_text(raw.get("behaviors") or "")
-        notes = sanitize_summary_text(raw.get("notes") or "")
-        confidence_raw = raw.get("confidence")
-        try:
-            confidence = float(confidence_raw) if confidence_raw is not None else 0.0
-        except Exception:
-            confidence = 0.0
-        confidence = max(0.0, min(1.0, confidence))
+        recurring_topics = sanitize_summary_text(raw.get("recurring_topics") or "")
+        inside_jokes = sanitize_summary_text(raw.get("inside_jokes") or "")
+        nicknames = sanitize_summary_text(raw.get("nicknames") or "")
+        bot_opinion = sanitize_summary_text(raw.get("bot_opinion") or "")
+        confidence_score = sanitize_summary_text(str(raw.get("confidence_score") or ""))
 
         updates: Dict[str, Any] = {
             "username": message.author.name,
             "display_name": message.author.display_name,
             "messages_seen": seen,
         }
-        if summary:
-            updates["summary"] = summary
-        if interests:
-            updates["interests"] = interests
-        if communication_style:
-            updates["communication_style"] = communication_style
-        if traits:
-            updates["traits"] = traits
-        if relationship:
-            updates["relationship"] = relationship
-        if relationship_trend:
-            updates["relationship_trend"] = relationship_trend
-        if opinion:
-            updates["opinion"] = opinion
-        if topics:
-            updates["topics"] = topics
-        if activity_level:
-            updates["activity_level"] = activity_level
-        if behaviors:
-            updates["behaviors"] = behaviors
-        if notes:
-            existing_note = (self.store.get_user_card(uid) or {}).get("notes") or ""
-            merged_notes = f"{existing_note}; {notes}".strip("; ").strip()
-            updates["notes"] = merged_notes
-        if confidence:
-            # Keep a lightweight confidence marker in notes if the summary is still being formed.
-            if not notes:
-                updates["notes"] = f"confidence={confidence:.2f}"
+        if summary: updates["summary"] = summary
+        if personality_traits: updates["personality_traits"] = personality_traits
+        if humor_style: updates["humor_style"] = humor_style
+        if toxicity_level: updates["toxicity_level"] = toxicity_level
+        if friendliness: updates["friendliness"] = friendliness
+        if relationship: updates["relationship"] = relationship
+        if relationship_trend: updates["relationship_trend"] = relationship_trend
+        if recurring_topics: updates["recurring_topics"] = recurring_topics
+        if inside_jokes: updates["inside_jokes"] = inside_jokes
+        if nicknames: updates["nicknames"] = nicknames
+        if bot_opinion: updates["bot_opinion"] = bot_opinion
+        if confidence_score: updates["confidence_score"] = confidence_score
 
         self.store.update_user_card(uid, **updates)
-        if summary:
-            self.store.append_profile_note(uid, f"card: {summary}")
-        if traits:
-            self.store.upsert_profile_fields(uid, traits=traits)
-        if relationship:
-            self.store.upsert_profile_fields(uid, relationship=relationship)
-        if notes:
-            self.store.append_profile_note(uid, notes)
 
     def detect_emotion(self, text: str) -> str:
         low = (text or "").lower()
@@ -683,11 +629,21 @@ class AgentPlanner:
         self.maybe_learn_explicit_memory(message.author, user_text)
         asyncio.create_task(self.refresh_user_card(message, user_text))
 
+        low = (user_text or "").lower().strip()
+
+        # Hard-route direct commands to bypass chat personality processing
         direct = self.direct_parser.parse(message, user_text)
         if direct:
+            # Handle correction follow-ups like "not here", "to another channel"
+            if direct.get("action") == "reply" and any(k in low for k in ["не сюда", "в другой", "другой канал", "перепутал"]):
+                 return {"action": "ignore"} # Let the user re-issue the command correctly
             return direct
 
-        low = (user_text or "").lower().strip()
+        # Detect explicit command intent even if direct_parser missed it
+        if any(k in low for k in ["отправь в", "скажи в", "напиши в", "прочитай", "сводка", "пинг", "реакция"]):
+             # We should still try to let LLM decide if it's an action, but with priority
+             pass
+
         meta = self._meta(cid)
         last_action = (meta.get("last_action_type") or "").strip().lower()
         last_channel = (meta.get("last_target_channel_id") or "").strip()
@@ -696,18 +652,17 @@ class AgentPlanner:
         last_read_anchor = (meta.get("last_read_first_message_id") or "").strip()
 
         if self._read_followup(low) and last_action == "read_channel" and last_channel:
-            # If summary requested specifically and we have a fresh one
+            structured_followup = any(k in low for k in ["кто начал", "конфликт", "кто ответил", "что ответил"])
+
             if any(k in low for k in ["сводк", "коротк", "обсуждали", "что там было", "что происходило", "что писали", "о чем говорили", "о чём говорили"]) and last_read_summary:
-                # But if they also say "more" or "earlier", we should probably read more
-                if not any(k in low for k in ["еще", "ещё", "дальше", "more", "earlier", "до этого", "раньше", "before"]):
+                if not any(k in low for k in ["еще", "ещё", "дальше", "more", "earlier", "до этого", "раньше", "before"]) and not structured_followup:
                     return {"action": "reply", "text": last_read_summary}
 
-            # Anchor-based pagination
             return {
                 "action": "read_channel",
                 "channel": last_channel,
-                "limit": self._read_limit_from_text(low),
-                "before": last_read_anchor,
+                "limit": 80 if structured_followup else self._read_limit_from_text(low),
+                "before": last_read_anchor if any(k in low for k in ["до этого", "раньше", "before", "earlier"]) else "",
             }
 
         # Bounded retries for duplicate/echo prevention
@@ -750,11 +705,17 @@ class AgentPlanner:
         text = (observation.get("text") or "").strip()
         if not text:
             return "там пусто"
+        channel_id = observation.get("channel_id") or ""
         channel_name = observation.get("channel_name") or (action.get("channel") or "канал")
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-        if not lines:
-            return "там пусто"
+        meta = self._meta(channel_id) if channel_id else {}
+        structured_context = ""
+        if meta.get("summary_topics"):
+            structured_context = (
+                f"Темы: {meta.get('summary_topics')}\n"
+                f"Участники: {meta.get('summary_participants')}\n"
+                f"Атмосфера: {meta.get('summary_mood')}\n"
+            )
 
         raw = await self.llm.chat(
             [
@@ -764,19 +725,20 @@ class AgentPlanner:
                     "content": (
                         f"Запрос пользователя: {user_text}\n"
                         f"Канал: {channel_name}\n"
+                        f"Контекст канала:\n{structured_context}\n"
                         f"Наблюдение инструмента:\n{text}\n\n"
-                        "Сделай короткий живой ответ по-русски. "
-                        "Если это сводка — кратко опиши суть. Не пиши, что не можешь читать канал."
+                        "Сделай короткий живой ответ по-русски."
                     ),
                 },
             ],
             temperature=0.35,
-            max_tokens=120,
+            max_tokens=180,
         )
         cleaned = sanitize_summary_text(raw or "") or clean_response(raw or "")
         if cleaned and not self._looks_like_echo(cleaned, user_text, []):
             return cleaned
 
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
         if len(lines) == 1:
             return f"Последнее в {channel_name}: {lines[0]}"
         if len(lines) <= 3:
@@ -786,47 +748,53 @@ class AgentPlanner:
     async def summarize_channel(self, channel_id: str, force: bool = False):
         meta = self.store.get_channel_meta(channel_id) or {}
 
-        import time
         now = time.time()
 
         last_summary_ts = self._parse_db_timestamp(meta.get("summary_timestamp"))
         last_summary_count = int(meta.get("last_summary_count") or 0)
         current_count = int(meta.get("message_count") or 0)
 
-        # Cache for 20 minutes unless significant activity (>10 new messages)
         if not force and last_summary_ts > 0:
             if now - last_summary_ts < 1200 and (current_count - last_summary_count) < 10:
                 return
 
-        recent = self.store.get_recent_history(channel_id, 30) # Fetch raw history
+        recent = self.store.get_recent_history(channel_id, 50)
         recent_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
-        cur = (meta.get("summary") or "").strip()
         if not recent_text.strip():
             return
 
-        raw = await self.llm.chat(
-            [
-                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Текущая сводка:\n{cur or 'нет'}\n\nПоследний диалог:\n{recent_text}\n\nНовая короткая сводка:"},
-            ],
-            temperature=0.2,
-            max_tokens=250,
-            frequency_penalty=0.1,
-            presence_penalty=0.0,
-        )
-
-        summary = sanitize_summary_text(raw or "") or clean_response(raw or "")
-        if not summary or self._is_bad_summary(summary):
-            summary = self._fallback_summary_from_recent(recent)
-
-        if summary and not self._is_bad_summary(summary):
-            import datetime
-            self.store.update_channel_meta(
-                channel_id,
-                summary=summary[: self.settings.max_summary_chars],
-                summary_timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                last_summary_count=current_count
+        try:
+            raw = await self.llm.chat_json(
+                [
+                    {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"История:\n{recent_text}\n\nВерни структурированную сводку."}
+                ],
+                temperature=0.2,
+                max_tokens=500
             )
+        except Exception:
+            return
+
+        if not raw or not isinstance(raw, dict):
+            return
+
+        brief = sanitize_summary_text(raw.get("brief_summary") or "")
+        if not brief or self._is_bad_summary(brief):
+            brief = self._fallback_summary_from_recent(recent)
+
+        self.store.update_channel_meta(
+            channel_id,
+            summary=brief[: self.settings.max_summary_chars],
+            summary_timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            last_summary_count=current_count,
+            summary_participants=", ".join(raw.get("participants") or []),
+            summary_topics=", ".join(raw.get("topics") or []),
+            summary_mood=str(raw.get("mood") or ""),
+            summary_jokes=", ".join(raw.get("jokes") or []),
+            summary_conflicts=", ".join(raw.get("conflicts") or []),
+            summary_events=", ".join(raw.get("events") or []),
+            summary_unresolved=", ".join(raw.get("unresolved") or [])
+        )
 
     def should_summarize(self, channel_id: str) -> bool:
         meta = self.store.get_channel_meta(channel_id) or {}
@@ -835,7 +803,6 @@ class AgentPlanner:
     def _parse_db_timestamp(self, ts_str: str) -> float:
         if not ts_str:
             return 0.0
-        import datetime
         try:
             return datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
         except Exception:
@@ -852,36 +819,32 @@ class AgentPlanner:
         cid = str(message.channel.id)
         meta = self.store.get_channel_meta(cid) or {}
 
-        # Anti-spam cooldowns
-        import time
         now = time.time()
 
         last_autonomy_at = self._parse_db_timestamp(meta.get("last_autonomy_at"))
         last_interjection_at = self._parse_db_timestamp(meta.get("last_interjection_at"))
         last_emoji_at = self._parse_db_timestamp(meta.get("last_emoji_at"))
 
-        if now - last_autonomy_at < 120: # 2 min global
+        if now - last_autonomy_at < self.settings.autonomy_global_cooldown:
             return None
 
-        recent_rows = self.store.get_recent_history_rows(cid, 20)
+        recent_rows = self.store.get_recent_history_rows(cid, 30)
         if not recent_rows:
             return None
 
-        # Detect active conversation: >=5 messages, >=2 distinct users, within last 10 minutes
         active_msgs = []
         for r in reversed(recent_rows):
             ts = self._parse_db_timestamp(r.get("created_at") or "")
-            if ts == 0.0: # If created_at is missing for some reason
-                ts = now
-            if now - ts > 600: # 10 min
+            if ts == 0.0: ts = now
+            if now - ts > self.settings.autonomy_active_window_sec:
                 break
             active_msgs.append(r)
 
-        if len(active_msgs) < 5:
+        if len(active_msgs) < self.settings.autonomy_min_messages:
             return None
 
         participants_ids = {r.get("speaker_id") for r in active_msgs if (r.get("role") or "").lower() == "user"}
-        if len(participants_ids) < 2:
+        if len(participants_ids) < self.settings.autonomy_min_users:
             return None
 
         # Build participants info
@@ -911,8 +874,8 @@ class AgentPlanner:
                 "content": (
                     f"Последние сообщения канала:\n{recent_text}\n\n"
                     f"Участники:\n" + ("\n".join(f"- {p}" for p in participants) if participants else "- нет карточек") + "\n\n"
-                    f"Cooldowns: interjection={int(now - last_interjection_at)}s, emoji={int(now - last_emoji_at)}s (min 1200s and 300s)\n"
-                    "Выбери действие. Если interjection или reply — они должны быть очень короткими."
+                    f"Cooldowns: interjection={int(now - last_interjection_at)}s, emoji={int(now - last_emoji_at)}s (min {self.settings.autonomy_interjection_cooldown}s and {self.settings.autonomy_emoji_cooldown}s)\n"
+                    "Выбери действие. Будь Discord-native."
                 ),
             },
         ]
@@ -924,24 +887,25 @@ class AgentPlanner:
             return {"action": "ignore"}
 
         prompt, last_interjection_at, last_emoji_at = res
-        import time
         now = time.time()
 
-        raw = await self.llm.chat_json(prompt, temperature=0.3, max_tokens=140)
+        raw = await self.llm.chat_json(prompt, temperature=0.4, max_tokens=250)
         action = (raw.get("action") or "ignore").strip().lower()
 
-        # Probabilistic decide is mostly handled by LLM, but we enforce hard cooldowns here
-        if action in {"short_interject", "contextual_reply", "reply"}:
-            if now - last_interjection_at < 1200: # 20 min
+        if self.settings.autonomy_debug:
+            print(f"[AUTONOMY DEBUG] Action: {action}, Reasoning: {raw.get('reasoning')}")
+
+        if action in {"short_interject", "contextual_reply", "reply", "sarcastic_comment", "playful_question", "meme_reply"}:
+            if now - last_interjection_at < self.settings.autonomy_interjection_cooldown:
                 return {"action": "ignore"}
         elif action == "react":
-            if now - last_emoji_at < 300: # 5 min
+            if now - last_emoji_at < self.settings.autonomy_emoji_cooldown:
                 return {"action": "ignore"}
 
-        if action in {"reply", "short_interject", "contextual_reply"}:
+        if action in {"reply", "short_interject", "contextual_reply", "sarcastic_comment", "playful_question", "meme_reply"}:
             text = (raw.get("text") or raw.get("message") or "").strip()
             if text and not self._looks_like_echo(text, "", self.store.get_recent_history(str(message.channel.id), 5)):
-                return {"action": "reply", "text": text}
+                return {"action": action, "text": text}
             return {"action": "ignore"}
 
         if action == "react" and (raw.get("reaction") or "").strip():

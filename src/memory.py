@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import datetime
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -25,7 +26,7 @@ class MemoryStore:
         self.db = sqlite3.connect(db_file)
         self.db.row_factory = sqlite3.Row
         self.cur = self.db.cursor()
-        self._setup_schema()
+        self._migrate()
 
     def _row_to_dict(self, row):
         if row is None:
@@ -38,21 +39,38 @@ class MemoryStore:
         try:
             return dict(row)
         except Exception:
-            return None
+            try:
+                return {k: row[k] for k in row.keys()}
+            except Exception:
+                return None
 
-    def _ensure_column(self, table: str, column_def: str) -> None:
-        col_name = column_def.split()[0]
+    def _get_version(self) -> int:
+        try:
+            row = self.cur.execute("SELECT version FROM schema_version").fetchone()
+            return int(row["version"]) if row else 0
+        except sqlite3.OperationalError:
+            return 0
 
-        rows = self.cur.execute(f"PRAGMA table_info({table})").fetchall()
-        cols = {r["name"] for r in rows}
-
-        if col_name in cols:
-            return
-
-        self.cur.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+    def _set_version(self, version: int):
+        self.cur.execute("DELETE FROM schema_version")
+        self.cur.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
         self.db.commit()
 
-    def _setup_schema(self):
+    def _migrate(self):
+        self.cur.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)")
+        version = self._get_version()
+
+        if version < 1:
+            self._migrate_v1()
+            version = 1
+            self._set_version(version)
+
+        if version < 2:
+            self._migrate_v2()
+            version = 2
+            self._set_version(version)
+
+    def _migrate_v1(self):
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,9 +84,6 @@ class MemoryStore:
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
-
-
-
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS user_cards (
             user_id TEXT PRIMARY KEY,
@@ -91,7 +106,6 @@ class MemoryStore:
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
-
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS facts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,7 +119,6 @@ class MemoryStore:
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
-
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS prefs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +131,6 @@ class MemoryStore:
             UNIQUE(user_id, key, value)
         )
         """)
-
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS episodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,7 +145,6 @@ class MemoryStore:
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
-
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS feedback (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,7 +158,6 @@ class MemoryStore:
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
-
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS channel_meta (
             channel_id TEXT PRIMARY KEY,
@@ -176,48 +186,37 @@ class MemoryStore:
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
-
-        # migrations for older DBs
-        self._ensure_column("channel_meta", "summary_timestamp TEXT")
-        self._ensure_column("channel_meta", "last_read_anchor_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_interjection_at TEXT")
-        self._ensure_column("channel_meta", "last_emoji_at TEXT")
-
         self.cur.execute("""
-        UPDATE channel_meta
-        SET last_autonomy_at = CURRENT_TIMESTAMP
-        WHERE last_autonomy_at IS NULL OR last_autonomy_at = ''
-        """)
-        self.cur.execute("""
-        UPDATE channel_meta
-        SET last_interjection_at = CURRENT_TIMESTAMP
-        WHERE last_interjection_at IS NULL OR last_interjection_at = ''
-        """)
-        self.cur.execute("""
-        UPDATE channel_meta
-        SET last_emoji_at = CURRENT_TIMESTAMP
-        WHERE last_emoji_at IS NULL OR last_emoji_at = ''
+        CREATE TABLE IF NOT EXISTS profiles (
+            user_id TEXT PRIMARY KEY,
+            username TEXT DEFAULT '',
+            display_name TEXT DEFAULT '',
+            preferred_name TEXT DEFAULT '',
+            relationship TEXT DEFAULT '',
+            traits TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            affinity INTEGER DEFAULT 0,
+            last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
         """)
         self.db.commit()
 
-        # user_cards migrations
-        self._ensure_column("user_cards", "interests TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "communication_style TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
+    def _migrate_v2(self):
+        cols = {r["name"] for r in self.cur.execute("PRAGMA table_info(user_cards)").fetchall()}
+        for col in [
+            "personality_traits", "humor_style", "toxicity_level", "friendliness",
+            "inside_jokes", "nicknames", "bot_opinion", "confidence_score"
+        ]:
+            if col not in cols:
+                self.cur.execute(f"ALTER TABLE user_cards ADD COLUMN {col} TEXT DEFAULT ''")
 
-        # other channel_meta migrations
-        self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_reaction TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_limit INTEGER DEFAULT 0")
-        self._ensure_column("channel_meta", "last_read_first_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_last_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_summary TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_autonomy_count INTEGER DEFAULT 0")
-        self._ensure_column("channel_meta", "last_autonomy_at TEXT")
-        self._ensure_column("channel_meta", "last_interjection_type TEXT DEFAULT ''")
-
+        cols = {r["name"] for r in self.cur.execute("PRAGMA table_info(channel_meta)").fetchall()}
+        for col in [
+            "summary_participants", "summary_topics", "summary_mood",
+            "summary_jokes", "summary_conflicts", "summary_events", "summary_unresolved"
+        ]:
+            if col not in cols:
+                self.cur.execute(f"ALTER TABLE channel_meta ADD COLUMN {col} TEXT DEFAULT ''")
         self.db.commit()
 
     def ensure_profile(self, user_id: str, username: str = "", display_name: str = "") -> None:
@@ -356,6 +355,14 @@ class MemoryStore:
             "affinity",
             "messages_seen",
             "last_seen",
+            "personality_traits",
+            "humor_style",
+            "toxicity_level",
+            "friendliness",
+            "inside_jokes",
+            "nicknames",
+            "bot_opinion",
+            "confidence_score"
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
@@ -540,7 +547,7 @@ class MemoryStore:
     def get_recent_history_rows(self, channel_id: str, limit: int = 8):
         rows = self.cur.execute(
             """
-            SELECT role, speaker_id, speaker_name, content, attachments, id
+            SELECT role, speaker_id, speaker_name, content, attachments, id, created_at
             FROM history
             WHERE channel_id = ?
             ORDER BY id DESC
@@ -665,6 +672,24 @@ class MemoryStore:
             if user_card.get("messages_seen") is not None:
                 lines.append(f"Сообщений: {int(user_card['messages_seen'] or 0)}")
 
+            # Social intelligence fields
+            if user_card.get("personality_traits"):
+                lines.append(f"Личность: {user_card['personality_traits']}")
+            if user_card.get("humor_style"):
+                lines.append(f"Юмор: {user_card['humor_style']}")
+            if user_card.get("toxicity_level"):
+                lines.append(f"Токсичность: {user_card['toxicity_level']}")
+            if user_card.get("friendliness"):
+                lines.append(f"Дружелюбность: {user_card['friendliness']}")
+            if user_card.get("inside_jokes"):
+                lines.append(f"Локальные мемы: {user_card['inside_jokes']}")
+            if user_card.get("nicknames"):
+                lines.append(f"Никнеймы: {user_card['nicknames']}")
+            if user_card.get("bot_opinion"):
+                lines.append(f"Мнение Nika (соц): {user_card['bot_opinion']}")
+            if user_card.get("confidence_score"):
+                lines.append(f"Уверенность (соц): {user_card['confidence_score']}")
+
         for pref in prefs:
             lines.append(f"Предпочтение: {pref['key']}={pref['value']} ({float(pref['weight'] or 0):+.2f})")
         for fact in facts:
@@ -754,6 +779,13 @@ class MemoryStore:
             "last_emoji_at",
             "last_interjection_type",
             "updated_at",
+            "summary_participants",
+            "summary_topics",
+            "summary_mood",
+            "summary_jokes",
+            "summary_conflicts",
+            "summary_events",
+            "summary_unresolved"
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
@@ -814,7 +846,7 @@ class MemoryStore:
         }
         if action_type:
             updates["last_action_type"] = action_type
-        if interjection_type in {"reply", "short_interject", "contextual_reply"}:
+        if interjection_type in {"reply", "short_interject", "contextual_reply", "sarcastic_comment", "playful_question", "meme_reply"}:
             updates["last_interjection_at"] = now_ts
         elif interjection_type == "react":
             updates["last_emoji_at"] = now_ts
