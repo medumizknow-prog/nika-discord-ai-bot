@@ -226,12 +226,12 @@ class AgentPlanner:
                     except Exception: pass
             if not parsed:
                 cleaned = clean_response(raw)
-                if cleaned and not self.is_duplicate_response(cid, cleaned) and not self._looks_like_echo(cleaned, user_text, self.store.get_recent_history(cid, 5)): return {"action": "reply", "text": cleaned}
+                if cleaned and not self._looks_like_echo(cleaned, user_text, self.store.get_recent_history(cid, 5)): return {"action": "reply", "text": cleaned}
                 continue
             action = self._action_from_llm(parsed)
-            if action.get("action") in {"reply", "short_interject", "contextual_reply"}:
+            if action.get("action") in {"reply", "short_interject", "contextual_reply", "sarcastic_comment", "playful_question", "meme_reply"}:
                 txt = action.get("text") or ""
-                if not txt or self.is_duplicate_response(cid, txt) or self._looks_like_echo(txt, user_text, self.store.get_recent_history(cid, 5)): continue
+                if not txt or self._looks_like_echo(txt, user_text, self.store.get_recent_history(cid, 5)): continue
             return action
         return {"action": "ignore"}
 
