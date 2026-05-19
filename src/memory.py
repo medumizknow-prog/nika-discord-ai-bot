@@ -53,6 +53,14 @@ class MemoryStore:
         self.db.commit()
 
     def _setup_schema(self):
+        # Create schema version table
+        self.cur.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY
+        )
+        """)
+
+        # history
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,8 +75,22 @@ class MemoryStore:
         )
         """)
 
+        # profiles (old table, kept for compatibility)
+        self.cur.execute("""
+        CREATE TABLE IF NOT EXISTS profiles (
+            user_id TEXT PRIMARY KEY,
+            username TEXT DEFAULT '',
+            display_name TEXT DEFAULT '',
+            preferred_name TEXT DEFAULT '',
+            relationship TEXT DEFAULT '',
+            traits TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            affinity INTEGER DEFAULT 0,
+            last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
 
-
+        # user_cards (Social Memory)
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS user_cards (
             user_id TEXT PRIMARY KEY,
@@ -177,12 +199,33 @@ class MemoryStore:
         )
         """)
 
-        # migrations for older DBs
+        # Migrations (idempotent)
+        # user_cards
+        self._ensure_column("user_cards", "summary TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "interests TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "communication_style TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "traits TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "relationship TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "opinion TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "topics TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "notes TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "affinity INTEGER DEFAULT 0")
+        self._ensure_column("user_cards", "messages_seen INTEGER DEFAULT 0")
+
+        # channel_meta
         self._ensure_column("channel_meta", "summary_timestamp TEXT")
         self._ensure_column("channel_meta", "last_read_anchor_message_id TEXT DEFAULT ''")
         self._ensure_column("channel_meta", "last_interjection_at TEXT")
         self._ensure_column("channel_meta", "last_emoji_at TEXT")
+        self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_target_channel_id TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_read_limit INTEGER DEFAULT 0")
+        self._ensure_column("channel_meta", "last_summary_count INTEGER DEFAULT 0")
 
+        # Initialize/Fix timestamps
         self.cur.execute("""
         UPDATE channel_meta
         SET last_autonomy_at = CURRENT_TIMESTAMP
@@ -198,25 +241,6 @@ class MemoryStore:
         SET last_emoji_at = CURRENT_TIMESTAMP
         WHERE last_emoji_at IS NULL OR last_emoji_at = ''
         """)
-        self.db.commit()
-
-        # user_cards migrations
-        self._ensure_column("user_cards", "interests TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "communication_style TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
-
-        # other channel_meta migrations
-        self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_reaction TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_limit INTEGER DEFAULT 0")
-        self._ensure_column("channel_meta", "last_read_first_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_last_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_summary TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_autonomy_count INTEGER DEFAULT 0")
-        self._ensure_column("channel_meta", "last_autonomy_at TEXT")
-        self._ensure_column("channel_meta", "last_interjection_type TEXT DEFAULT ''")
 
         self.db.commit()
 
@@ -277,6 +301,7 @@ class MemoryStore:
         self.upsert_profile_fields(user_id, notes=new_notes)
 
     def adjust_affinity(self, user_id: str, delta: int) -> None:
+        # Adjust in both profiles and user_cards
         self.cur.execute(
             """
             UPDATE profiles
@@ -286,13 +311,22 @@ class MemoryStore:
             """,
             (delta, user_id),
         )
+        self.cur.execute(
+            """
+            UPDATE user_cards
+            SET affinity = COALESCE(affinity, 0) + ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+            """,
+            (delta, user_id),
+        )
         self.db.commit()
 
     def ensure_user_card(self, user_id: str, username: str = "", display_name: str = "") -> None:
         self.cur.execute(
             """
-            INSERT INTO user_cards (user_id, username, display_name, last_seen)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO user_cards (user_id, username, display_name, last_seen, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(user_id) DO UPDATE SET
                 username=excluded.username,
                 display_name=excluded.display_name,
@@ -540,7 +574,7 @@ class MemoryStore:
     def get_recent_history_rows(self, channel_id: str, limit: int = 8):
         rows = self.cur.execute(
             """
-            SELECT role, speaker_id, speaker_name, content, attachments, id
+            SELECT role, speaker_id, speaker_name, content, attachments, id, created_at
             FROM history
             WHERE channel_id = ?
             ORDER BY id DESC

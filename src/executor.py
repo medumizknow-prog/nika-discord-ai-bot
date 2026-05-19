@@ -91,8 +91,8 @@ class ActionExecutor:
             if token in member.display_name.lower() or token in member.name.lower():
                 return member
         rows = self.store.cur.execute(
-            "SELECT user_id FROM profiles WHERE LOWER(display_name) LIKE LOWER(?) OR LOWER(preferred_name) LIKE LOWER(?) OR LOWER(username) LIKE LOWER(?) LIMIT 10",
-            (f"%{token}%", f"%{token}%", f"%{token}%"),
+            "SELECT user_id FROM user_cards WHERE LOWER(display_name) LIKE LOWER(?) OR LOWER(username) LIKE LOWER(?) LIMIT 10",
+            (f"%{token}%", f"%{token}%"),
         ).fetchall()
         for row in rows:
             try:
@@ -118,269 +118,93 @@ class ActionExecutor:
             key = (action.get("key") or "note").strip()
             value = (action.get("value") or action.get("text") or "").strip()
             if not value:
-                return {"kind": "error", "text": "Окей, но запоминать нечего."}
+                return {"kind": "error", "text": "пустота, запоминать нечего"}
             self.store.upsert_fact(str(message.author.id), message.author.display_name, key, value, confidence=0.95, source="explicit")
-            self.store.append_profile_note(str(message.author.id), f"{key}: {value}")
+            self.store.append_user_card_note(str(message.author.id), f"{key}: {value}")
             self.store.adjust_affinity(str(message.author.id), 1)
-            self.store.update_channel_meta(str(message.channel.id), last_action_type="remember")
-            self.store.add_episode(
-                str(message.channel.id),
-                str(message.guild.id) if message.guild else "",
-                str(message.author.id),
-                message.author.display_name,
-                f"Запомнила: {key} — {value}",
-                episode_type="memory",
-                importance=0.8,
-                emotion="neutral",
-            )
-            return {"kind": "status", "text": f"Окей, запомнила: {key} — {value}"}
+            return {"kind": "status", "text": f"ок, запомнила {key}"}
 
         if act == "read_channel":
             if not message.guild:
-                return {"kind": "error", "text": "Это работает только на сервере."}
+                return {"kind": "error", "text": "я не в лс"}
 
             channel_token = (action.get("channel") or "").strip()
             channel = self._resolve_channel(message.guild, channel_token) if channel_token else None
-            if not channel and self.store.get_channel_meta(str(message.channel.id)):
-                last_meta = self.store.get_channel_meta(str(message.channel.id)) or {}
-                channel = self._resolve_channel(message.guild, (last_meta.get("last_target_channel_id") or "").strip())
 
             if not channel:
-                return {"kind": "error", "text": "Канал не найден."}
+                # Try to use last channel if none provided
+                last_meta = self.store.get_channel_meta(str(message.channel.id)) or {}
+                last_channel_id = last_meta.get("last_target_channel_id")
+                if last_channel_id:
+                    channel = message.guild.get_channel(int(last_channel_id))
 
-            perms = channel.permissions_for(message.guild.me) if message.guild.me else None
-            if perms and (not perms.view_channel or not perms.read_message_history):
-                return {"kind": "error", "text": "У меня нет прав читать тот канал."}
+            if not channel:
+                return {"kind": "error", "text": "канал не найден"}
 
             limit = max(1, min(int(action.get("limit") or 30), 80))
             before = (action.get("before") or "").strip()
             before_obj = discord.Object(id=int(before)) if before.isdigit() else None
 
-            # Use a slightly larger scan window to avoid missing the tail around anchors.
-            scan_limit = min(100, max(limit + 10, 20))
             items = []
-            first_message_id = ""
-            last_message_id = ""
-            history_kwargs = {"limit": scan_limit, "oldest_first": False}
+            history_kwargs = {"limit": limit}
             if before_obj:
                 history_kwargs["before"] = before_obj
 
             async for msg in channel.history(**history_kwargs):
-                if msg.id == message.id:
-                    continue
-                author = msg.author.display_name if hasattr(msg.author, "display_name") else msg.author.name
-                body = (msg.content or "").strip() or "[без текста]"
-                items.append(
-                    {
-                        "id": str(msg.id),
-                        "author": author,
-                        "text": body,
-                    }
-                )
-                if len(items) >= limit:
-                    break
+                author = msg.author.display_name
+                body = (msg.content or "").strip() or "[file/empty]"
+                items.append({"id": str(msg.id), "author": author, "text": body})
 
             if not items:
-                self.store.record_read_state(
-                    str(message.channel.id),
-                    target_channel_id=str(channel.id),
-                    limit=limit,
-                    first_message_id="",
-                    last_message_id="",
-                )
-                return {
-                    "kind": "observation",
-                    "channel_id": str(channel.id),
-                    "channel_name": channel.name,
-                    "text": "",
-                    "first_message_id": "",
-                    "last_message_id": "",
-                    "limit": limit,
-                    "before": before,
-                }
+                return {"kind": "observation", "text": "", "channel_name": channel.name}
 
-            items.reverse()
-            first_message_id = items[0]["id"]
-            last_message_id = items[-1]["id"]
+            # Items are fetched from newest to oldest.
+            # The "anchor" for further pagination is the oldest message in this batch.
+            anchor_id = items[-1]["id"]
 
             self.store.record_read_state(
                 str(message.channel.id),
                 target_channel_id=str(channel.id),
                 limit=limit,
-                anchor_message_id=first_message_id, # Oldest of current batch is anchor for "earlier"
-                first_message_id=first_message_id,
-                last_message_id=last_message_id,
+                anchor_message_id=anchor_id
             )
 
+            items.reverse() # Show oldest first for natural reading
             return {
                 "kind": "observation",
                 "channel_id": str(channel.id),
                 "channel_name": channel.name,
-                "text": "\n".join(f"{item['author']}: {item['text']}" for item in items),
-                "anchor_message_id": first_message_id,
-                "first_message_id": first_message_id,
-                "last_message_id": last_message_id,
-                "limit": limit,
-                "before": before,
+                "text": "\n".join(f"{i['author']}: {i['text']}" for i in items),
+                "limit": limit
             }
 
         if act == "send_message":
-            if not message.guild:
-                return {"kind": "error", "text": "Это работает только на сервере."}
+            if not message.guild: return {"kind": "error", "text": "я не в лс"}
             channel = self._resolve_channel(message.guild, (action.get("channel") or "").strip())
             text = (action.get("text") or "").strip()
-            if not channel or not text:
-                return {"kind": "error", "text": "Не хватает данных для отправки."}
-            perms = channel.permissions_for(message.guild.me) if message.guild.me else None
-            if perms and not perms.send_messages:
-                return {"kind": "error", "text": "У меня нет прав писать в тот канал."}
+            if not channel or not text: return {"kind": "error", "text": "что-то пошло не так"}
             await self.safe_send(channel, text)
-            self.store.set_last_target(str(message.channel.id), target_channel_id=str(channel.id))
-            self.store.update_channel_meta(str(message.channel.id), last_action_type="send_message")
-            self.store.add_episode(
-                str(message.channel.id),
-                str(message.guild.id) if message.guild else "",
-                str(message.author.id),
-                message.author.display_name,
-                f"Отправила сообщение в {channel.name}: {text}",
-                episode_type="action",
-                importance=0.7,
-                emotion="neutral",
-            )
-            return {
-                "kind": "status",
-                "text": f"отправила в {channel.mention}",
-                "channel_id": str(channel.id),
-                "channel_name": channel.name,
-                "sent_text": text,
-            }
-
-        if act == "ping_user":
-            if not message.guild:
-                return {"kind": "error", "text": "Это работает только на сервере."}
-            member = await self._resolve_member(message.guild, (action.get("user") or "").strip())
-            if not member:
-                return {"kind": "error", "text": "Юзер не найден."}
-            channel_token = (action.get("channel") or "").strip()
-            channel = self._resolve_channel(message.guild, channel_token) if channel_token else (message.channel if isinstance(message.channel, discord.TextChannel) else None)
-            if not channel:
-                return {"kind": "error", "text": "Не могу определить канал."}
-            perms = channel.permissions_for(message.guild.me) if message.guild.me else None
-            if perms and not perms.send_messages:
-                return {"kind": "error", "text": "У меня нет прав писать в тот канал."}
-            text = (action.get("text") or "").strip() or "тебя зовут сюда"
-            final_text = f"{member.mention} {text}"
-            await self.safe_send(channel, final_text)
-            self.store.set_last_target(str(message.channel.id), target_channel_id=str(channel.id), target_user_id=str(member.id))
-            self.store.update_channel_meta(str(message.channel.id), last_action_type="ping_user")
-            self.store.add_episode(
-                str(message.channel.id),
-                str(message.guild.id) if message.guild else "",
-                str(message.author.id),
-                message.author.display_name,
-                f"Пинганула {member.display_name} в {channel.name}",
-                episode_type="action",
-                importance=0.7,
-                emotion="neutral",
-            )
-            return {
-                "kind": "status",
-                "text": f"позвала {member.display_name}",
-                "channel_id": str(channel.id),
-                "channel_name": channel.name,
-                "sent_text": final_text,
-            }
+            return {"kind": "status", "text": f"скинула в {channel.mention}"}
 
         if act == "react":
             reaction = (action.get("reaction") or "").strip()
-            channel_token = (action.get("channel") or "").strip()
-            if not reaction:
-                return {"kind": "error", "text": "Реакция не указана."}
-            aliases = {
-                "clown": "🤡",
-                "clown emoji": "🤡",
-                "clown face": "🤡",
-                "emoji clown": "🤡",
-                "fire": "🔥",
-                "skull": "💀",
-                "heart": "❤️",
-                "thumbsup": "👍",
-                "thumbs up": "👍",
-            }
-            reaction = aliases.get(reaction.lower(), reaction)
-            target_message = message
-            target_channel_id = str(message.channel.id)
-            search_channel = None
-            if channel_token and message.guild:
-                search_channel = self._resolve_channel(message.guild, channel_token)
-                if not search_channel:
-                    return {"kind": "error", "text": "Канал не найден."}
-            elif message.guild and isinstance(message.channel, discord.TextChannel):
-                search_channel = message.channel
+            if not reaction: return {"kind": "error", "text": "эмодзи где"}
 
-            if search_channel is not None:
-                target_channel_id = str(search_channel.id)
-                async for msg in search_channel.history(limit=20, oldest_first=False):
-                    if msg.id == message.id:
-                        continue
-                    target_message = msg
+            # Simple alias
+            aliases = {"clown": "🤡", "fire": "🔥", "skull": "💀", "heart": "❤️", "thumb": "👍"}
+            reaction = aliases.get(reaction.lower(), reaction)
+
+            # React to the message before this one if it's a command
+            target = message
+            async for m in message.channel.history(limit=2):
+                if m.id != message.id:
+                    target = m
                     break
 
             try:
-                await target_message.add_reaction(reaction)
-                self.store.set_last_target(str(message.channel.id), target_channel_id=target_channel_id)
-                self.store.update_channel_meta(
-                    str(message.channel.id),
-                    last_action_type="react",
-                    last_reaction=reaction,
-                    last_target_channel_id=target_channel_id,
-                )
-                self.store.add_episode(
-                    str(message.channel.id),
-                    str(message.guild.id) if message.guild else "",
-                    str(message.author.id),
-                    message.author.display_name,
-                    f"Поставила реакцию {reaction}",
-                    episode_type="action",
-                    importance=0.6,
-                    emotion="neutral",
-                )
-                return {"kind": "status", "text": f"добавила {reaction}"}
-            except Exception as e:
-                return {"kind": "error", "text": f"не смогла поставить реакцию: {e}"}
-
-        if act == "post_thought":
-            if not message.guild:
-                return {"kind": "error", "text": "Это работает только на сервере."}
-            text = (action.get("text") or "").strip()
-            if not text:
-                return {"kind": "error", "text": "Мысль пустая."}
-            channel = self._resolve_channel_by_name(message.guild, self.settings.thought_channel_name)
-            if not channel:
-                return {"kind": "error", "text": "Не нашла свой канал."}
-            perms = channel.permissions_for(message.guild.me) if message.guild.me else None
-            if perms and not perms.send_messages:
-                return {"kind": "error", "text": "Не могу писать в свой канал."}
-            await self.safe_send(channel, text)
-            current = self.store.get_channel_meta(str(message.channel.id)) or {}
-            self.store.update_channel_meta(str(message.channel.id), last_bot_post_count=int(current.get("last_bot_post_count") or 0) + 1)
-            self.store.update_channel_meta(str(message.channel.id), last_action_type="post_thought")
-            self.store.add_episode(
-                str(message.channel.id),
-                str(message.guild.id) if message.guild else "",
-                str(message.author.id),
-                message.author.display_name,
-                f"Подумала и написала в свой канал: {text}",
-                episode_type="thought",
-                importance=0.5,
-                emotion="neutral",
-            )
-            return {
-                "kind": "status",
-                "text": f"мысль отправлена в {channel.mention}",
-                "channel_id": str(channel.id),
-                "channel_name": channel.name,
-                "sent_text": text,
-            }
+                await target.add_reaction(reaction)
+                return {"kind": "status", "text": f"ткнула {reaction}"}
+            except:
+                return {"kind": "error", "text": "не могу"}
 
         return {"kind": "ignore"}
