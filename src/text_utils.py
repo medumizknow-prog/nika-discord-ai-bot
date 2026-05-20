@@ -6,7 +6,10 @@ def normalize_compare_text(text: str) -> str:
     if not text:
         return ""
     text = text.lower()
+    # Remove emojis and special characters for comparison
     text = re.sub(r"[^\w\sа-яё]", "", text, flags=re.IGNORECASE)
+    # Remove common fillers
+    text = re.sub(r"\b(мм+|ок|ok|а|о|э|эх|ну|да|нет)\b", "", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -16,6 +19,9 @@ def is_too_similar(a: str, b: str, threshold: float = 0.85) -> bool:
     nb = normalize_compare_text(b)
 
     if not na or not nb:
+        # If both are empty after normalization, they are "similar" in terms of being junk
+        if not normalize_compare_text(a.strip()) and not normalize_compare_text(b.strip()):
+            return True
         return False
 
     if na == nb:
@@ -41,6 +47,18 @@ def is_too_similar(a: str, b: str, threshold: float = 0.85) -> bool:
 
 def is_short_text(text: str) -> bool:
     return len((text or "").strip()) < 12
+
+
+def is_degenerate(text: str) -> bool:
+    low = (text or "").lower().strip().strip(".?! ")
+    if not low:
+        return True
+    # "мм", "ok", "ок", "м?", "а?", "..."
+    if re.fullmatch(r"[мmaоoкkэех\.\?! ]+", low):
+        return True
+    if low in {"ok", "ок", "м", "мм", "а", "э", "ну", "да", "нет", "поняла", "понял"}:
+        return True
+    return False
 
 
 def strip_speaker_prefix(text: str) -> str:
@@ -117,7 +135,7 @@ def sanitize_summary_text(text: str) -> str:
     lines = []
     for line in text.splitlines():
         line = line.strip()
-        if len(line) < 2:
+        if len(line) > 1: # Only keep lines with content
             lines.append(line)
 
     return "\n".join(lines).strip()
@@ -137,14 +155,6 @@ def extract_json_object(text: str) -> dict:
         return json.loads(match.group(0))
     except Exception:
         return {}
-
-
-def extract_channel_tokens(text: str) -> list[str]:
-    return re.findall(r"<#(\d+)>", text or "")
-
-
-def extract_user_tokens(text: str) -> list[str]:
-    return re.findall(r"<@!?(\d+)>", text or "")
 
 
 def attachment_summary(atts) -> str:
