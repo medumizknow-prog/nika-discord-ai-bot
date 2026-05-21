@@ -85,6 +85,10 @@ class NikaDiscordClient(discord.Client):
         engage = engage or called or bool(preview_action)
 
         if not engage:
+            # Bot never triggers on bot messages or itself
+            if message.author.bot or (self.user and message.author.id == self.user.id):
+                return
+
             auto = await self.planner.run_autonomy(message)
             if auto.get("action") in {"react", "post_thought", "reply"}:
                 try:

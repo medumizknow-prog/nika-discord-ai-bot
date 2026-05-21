@@ -128,25 +128,35 @@ class AgentPlanner:
     def _looks_like_echo(self, candidate: str, user_text: str, recent) -> bool:
         if not candidate:
             return True
+
+        # Filler garbage and degenerative replies
         low = normalize_compare_text(candidate)
-        if not low or low in {"мм", "мм?", "м?", "а?", "э?", "эх?", "поняла", "понял", "ок", "ok"}:
+        degenerate = {
+            "мм", "ммм", "мм?", "м?", "а?", "э?", "эх?", "поняла", "понял",
+            "ок", "ok", "окей", "хотя", "ну", "типа", "хз", "ясно", "ппц", "лол", "кек"
+        }
+        if not low or low in degenerate:
             return True
 
-        # Prevent very short responses
+        # Prevent very short responses (degenerate)
         if len(low) < 2:
             return True
 
-        if is_too_similar(candidate, user_text, threshold=0.80):
+        # Echoing the user
+        if is_too_similar(candidate, user_text, threshold=0.75):
             return True
 
-        # Check against recent history to prevent repetition
+        # Check against recent history to prevent repetition (exactly as previous messages)
         for row in (recent or []):
-            if is_too_similar(candidate, row.get("content") or "", threshold=0.85):
-                return True
+            row_content = (row.get("content") or "").strip()
+            if not row_content:
+                continue
+            # If the row is "User: content", strip prefix
+            if ":" in row_content and (row.get("role") or "").lower() == "user":
+                row_content = row_content.split(":", 1)[1].strip()
 
-        last_assistant = self._last_assistant_reply(recent)
-        if last_assistant and is_too_similar(candidate, last_assistant, threshold=0.85):
-            return True
+            if is_too_similar(candidate, row_content, threshold=0.80):
+                return True
 
         return False
 
@@ -173,6 +183,7 @@ class AgentPlanner:
                 "сводку",
                 "что обсуждали",
                 "обсуждали",
+                "что там было",
                 "что там писали",
                 "что писали",
                 "о чем говорили",
@@ -188,6 +199,7 @@ class AgentPlanner:
                 "earlier",
                 "до этого",
                 "раньше",
+                "дальше",
             ]
         )
 
@@ -207,15 +219,9 @@ class AgentPlanner:
             "развёрнуто",
             "детально",
             "досконально",
-            "что обсуждали",
-            "что происходило",
-            "что там писали",
-            "что писали",
-            "сводка",
             "а еще",
             "что еще",
-            "подробнее",
-            "коротко",
+            "что еще там",
         ]
         summary_triggers = [
             "дай сводку",
@@ -231,6 +237,8 @@ class AgentPlanner:
             "расскажи",
             "поясни",
             "что происходило",
+            "подробнее",
+            "коротко",
         ]
         latest_triggers = [
             "последнее",
@@ -356,7 +364,7 @@ class AgentPlanner:
         relationship = sanitize_summary_text(raw.get("relationship") or "")
         relationship_trend = sanitize_summary_text(raw.get("relationship_trend") or "")
         opinion = sanitize_summary_text(raw.get("opinion") or "")
-        topics = sanitize_summary_text(raw.get("topics") or "")
+        recurring_topics = sanitize_summary_text(raw.get("topics") or raw.get("recurring_topics") or "")
         activity_level = sanitize_summary_text(raw.get("activity_level") or "")
         behaviors = sanitize_summary_text(raw.get("behaviors") or "")
         notes = sanitize_summary_text(raw.get("notes") or "")
@@ -386,8 +394,8 @@ class AgentPlanner:
             updates["relationship_trend"] = relationship_trend
         if opinion:
             updates["opinion"] = opinion
-        if topics:
-            updates["topics"] = topics
+        if recurring_topics:
+            updates["recurring_topics"] = recurring_topics
         if activity_level:
             updates["activity_level"] = activity_level
         if behaviors:
@@ -693,7 +701,7 @@ class AgentPlanner:
         last_channel = (meta.get("last_target_channel_id") or "").strip()
         last_read_summary = (meta.get("last_read_summary") or "").strip()
         last_read_limit = int(meta.get("last_read_limit") or 0)
-        last_read_anchor = (meta.get("last_read_first_message_id") or "").strip()
+        last_read_anchor = (meta.get("last_read_anchor_message_id") or meta.get("last_read_first_message_id") or "").strip()
 
         if self._read_followup(low) and last_action == "read_channel" and last_channel:
             # If summary requested specifically and we have a fresh one
@@ -733,14 +741,14 @@ class AgentPlanner:
 
             if not parsed:
                 cleaned = clean_response(raw)
-                if cleaned and not self.is_duplicate_response(cid, cleaned) and not self.anchor_hit(cid, cleaned) and not self._looks_like_echo(cleaned, user_text, self.store.get_recent_history(cid, 5)):
+                if cleaned and not self.is_duplicate_response(cid, cleaned) and not self.anchor_hit(cid, cleaned) and not self._looks_like_echo(cleaned, user_text, self.store.get_recent_history(cid, 10)):
                     return {"action": "reply", "text": cleaned}
                 continue
 
             action = self._action_from_llm(parsed)
             if action.get("action") == "reply":
                 txt = action.get("text") or ""
-                if not txt or self.is_duplicate_response(cid, txt) or self.anchor_hit(cid, txt) or self._looks_like_echo(txt, user_text, self.store.get_recent_history(cid, 5)):
+                if not txt or self.is_duplicate_response(cid, txt) or self.anchor_hit(cid, txt) or self._looks_like_echo(txt, user_text, self.store.get_recent_history(cid, 10)):
                     continue
             return action
 
@@ -793,12 +801,14 @@ class AgentPlanner:
         last_summary_count = int(meta.get("last_summary_count") or 0)
         current_count = int(meta.get("message_count") or 0)
 
-        # Cache for 20 minutes unless significant activity (>10 new messages)
+        # Cache for 20 minutes (1200s) unless significant activity (>10 new messages)
         if not force and last_summary_ts > 0:
-            if now - last_summary_ts < 1200 and (current_count - last_summary_count) < 10:
+            activity_delta = current_count - last_summary_count
+            if now - last_summary_ts < 1200 and activity_delta < 10:
                 return
 
-        recent = self.store.get_recent_history(channel_id, 30) # Fetch raw history
+        # Fetch enough context for a good summary
+        recent = self.store.get_recent_history(channel_id, 50)
         recent_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
         cur = (meta.get("summary") or "").strip()
         if not recent_text.strip():
@@ -860,10 +870,10 @@ class AgentPlanner:
         last_interjection_at = self._parse_db_timestamp(meta.get("last_interjection_at"))
         last_emoji_at = self._parse_db_timestamp(meta.get("last_emoji_at"))
 
-        if now - last_autonomy_at < 120: # 2 min global
+        if now - last_autonomy_at < 120: # 2 min global autonomy cooldown
             return None
 
-        recent_rows = self.store.get_recent_history_rows(cid, 20)
+        recent_rows = self.store.get_recent_history_rows(cid, 30)
         if not recent_rows:
             return None
 
@@ -871,16 +881,19 @@ class AgentPlanner:
         active_msgs = []
         for r in reversed(recent_rows):
             ts = self._parse_db_timestamp(r.get("created_at") or "")
-            if ts == 0.0: # If created_at is missing for some reason
+            if ts == 0.0:
+                # If created_at is missing, we can't reliably determine age, assume recent for now or skip.
+                # However, history table should have it.
                 ts = now
             if now - ts > 600: # 10 min
                 break
             active_msgs.append(r)
 
+        # Requirements: >=5 messages and >=2 distinct users (excluding bots)
         if len(active_msgs) < 5:
             return None
 
-        participants_ids = {r.get("speaker_id") for r in active_msgs if (r.get("role") or "").lower() == "user"}
+        participants_ids = {r.get("speaker_id") for r in active_msgs if (r.get("role") or "").lower() == "user" and r.get("speaker_id")}
         if len(participants_ids) < 2:
             return None
 

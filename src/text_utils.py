@@ -6,7 +6,11 @@ def normalize_compare_text(text: str) -> str:
     if not text:
         return ""
     text = text.lower()
-    text = re.sub(r"[^\w\sа-яё]", "", text, flags=re.IGNORECASE)
+    # Normalize unicode (e.g. ё -> е if needed, but here we keep it)
+    text = text.replace("ё", "е")
+    # Remove punctuation and special chars
+    text = re.sub(r"[^\w\sа-я]", "", text, flags=re.IGNORECASE)
+    # Collapse whitespace
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
