@@ -166,7 +166,9 @@ class ActionExecutor:
                 history_kwargs["before"] = before_obj
 
             async for msg in channel.history(**history_kwargs):
-                if msg.id == message.id:
+                # Don't skip the trigger message if we are paginating 'before' it.
+                # Only skip if we are reading the VERY LATEST messages in the current channel.
+                if str(channel.id) == str(message.channel.id) and not before and msg.id == message.id:
                     continue
                 author = msg.author.display_name if hasattr(msg.author, "display_name") else msg.author.name
                 body = (msg.content or "").strip() or "[без текста]"
@@ -185,6 +187,7 @@ class ActionExecutor:
                     str(message.channel.id),
                     target_channel_id=str(channel.id),
                     limit=limit,
+                    anchor_message_id=before if before else "",
                     first_message_id="",
                     last_message_id="",
                 )

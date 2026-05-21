@@ -42,17 +42,20 @@ class MemoryStore:
 
     def _ensure_column(self, table: str, column_def: str) -> None:
         col_name = column_def.split()[0]
-
         rows = self.cur.execute(f"PRAGMA table_info({table})").fetchall()
         cols = {r["name"] for r in rows}
-
         if col_name in cols:
             return
-
         self.cur.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
         self.db.commit()
 
     def _setup_schema(self):
+        # Versioning table
+        self.cur.execute("CREATE TABLE IF NOT EXISTS schema_version (id INTEGER PRIMARY KEY, version INTEGER)")
+        row = self.cur.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()
+        current_version = row["version"] if row else 0
+
+        # Base tables
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,7 +70,19 @@ class MemoryStore:
         )
         """)
 
-
+        self.cur.execute("""
+        CREATE TABLE IF NOT EXISTS profiles (
+            user_id TEXT PRIMARY KEY,
+            username TEXT DEFAULT '',
+            display_name TEXT DEFAULT '',
+            preferred_name TEXT DEFAULT '',
+            relationship TEXT DEFAULT '',
+            traits TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            affinity INTEGER DEFAULT 0,
+            last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
 
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS user_cards (
@@ -177,46 +192,35 @@ class MemoryStore:
         )
         """)
 
-        # migrations for older DBs
-        self._ensure_column("channel_meta", "summary_timestamp TEXT")
-        self._ensure_column("channel_meta", "last_read_anchor_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_interjection_at TEXT")
-        self._ensure_column("channel_meta", "last_emoji_at TEXT")
+        # Incremental Migrations
+        if current_version < 1:
+            self._ensure_column("user_cards", "interests TEXT DEFAULT ''")
+            self._ensure_column("user_cards", "communication_style TEXT DEFAULT ''")
+            self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
+            self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
+            self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
+            self._ensure_column("user_cards", "recurring_topics TEXT DEFAULT ''")
 
-        self.cur.execute("""
-        UPDATE channel_meta
-        SET last_autonomy_at = CURRENT_TIMESTAMP
-        WHERE last_autonomy_at IS NULL OR last_autonomy_at = ''
-        """)
-        self.cur.execute("""
-        UPDATE channel_meta
-        SET last_interjection_at = CURRENT_TIMESTAMP
-        WHERE last_interjection_at IS NULL OR last_interjection_at = ''
-        """)
-        self.cur.execute("""
-        UPDATE channel_meta
-        SET last_emoji_at = CURRENT_TIMESTAMP
-        WHERE last_emoji_at IS NULL OR last_emoji_at = ''
-        """)
-        self.db.commit()
+            self._ensure_column("channel_meta", "summary_timestamp TEXT")
+            self._ensure_column("channel_meta", "last_read_anchor_message_id TEXT DEFAULT ''")
+            self._ensure_column("channel_meta", "last_interjection_at TEXT")
+            self._ensure_column("channel_meta", "last_emoji_at TEXT")
+            self._ensure_column("channel_meta", "last_autonomy_at TEXT")
 
-        # user_cards migrations
-        self._ensure_column("user_cards", "interests TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "communication_style TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
+            self.cur.execute("INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, 1)")
+            self.db.commit()
+            current_version = 1
 
-        # other channel_meta migrations
-        self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_reaction TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_limit INTEGER DEFAULT 0")
-        self._ensure_column("channel_meta", "last_read_first_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_last_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_summary TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_autonomy_count INTEGER DEFAULT 0")
-        self._ensure_column("channel_meta", "last_autonomy_at TEXT")
-        self._ensure_column("channel_meta", "last_interjection_type TEXT DEFAULT ''")
+        if current_version < 2:
+            # Fix any NULL timestamps that might break ISO parsing
+            self.cur.execute("UPDATE channel_meta SET last_autonomy_at = CURRENT_TIMESTAMP WHERE last_autonomy_at IS NULL OR last_autonomy_at = ''")
+            self.cur.execute("UPDATE channel_meta SET last_interjection_at = CURRENT_TIMESTAMP WHERE last_interjection_at IS NULL OR last_interjection_at = ''")
+            self.cur.execute("UPDATE channel_meta SET last_emoji_at = CURRENT_TIMESTAMP WHERE last_emoji_at IS NULL OR last_emoji_at = ''")
+            self.cur.execute("UPDATE channel_meta SET summary_timestamp = '1970-01-01T00:00:00Z' WHERE summary_timestamp IS NULL OR summary_timestamp = ''")
+
+            self.cur.execute("UPDATE schema_version SET version = 2 WHERE id = 1")
+            self.db.commit()
+            current_version = 2
 
         self.db.commit()
 
@@ -350,6 +354,7 @@ class MemoryStore:
             "relationship_trend",
             "opinion",
             "topics",
+            "recurring_topics",
             "activity_level",
             "behaviors",
             "notes",
@@ -540,7 +545,7 @@ class MemoryStore:
     def get_recent_history_rows(self, channel_id: str, limit: int = 8):
         rows = self.cur.execute(
             """
-            SELECT role, speaker_id, speaker_name, content, attachments, id
+            SELECT role, speaker_id, speaker_name, content, attachments, id, created_at
             FROM history
             WHERE channel_id = ?
             ORDER BY id DESC
@@ -656,6 +661,8 @@ class MemoryStore:
                 lines.append(f"Мнение Nika: {user_card['opinion']}")
             if user_card.get("topics"):
                 lines.append(f"Темы: {user_card['topics']}")
+            if user_card.get("recurring_topics"):
+                lines.append(f"Регулярные темы: {user_card['recurring_topics']}")
             if user_card.get("activity_level"):
                 lines.append(f"Активность: {user_card['activity_level']}")
             if user_card.get("behaviors"):
