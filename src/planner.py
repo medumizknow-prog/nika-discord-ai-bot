@@ -129,10 +129,10 @@ class AgentPlanner:
         if not candidate:
             return True
         low = normalize_compare_text(candidate)
+        # Block common fillers and empty/very short responses
         if not low or low in {"мм", "мм?", "м?", "а?", "э?", "эх?", "поняла", "понял", "ок", "ok"}:
             return True
 
-        # Prevent very short responses
         if len(low) < 2:
             return True
 
@@ -397,7 +397,6 @@ class AgentPlanner:
             merged_notes = f"{existing_note}; {notes}".strip("; ").strip()
             updates["notes"] = merged_notes
         if confidence:
-            # Keep a lightweight confidence marker in notes if the summary is still being formed.
             if not notes:
                 updates["notes"] = f"confidence={confidence:.2f}"
 
@@ -695,14 +694,21 @@ class AgentPlanner:
         last_read_limit = int(meta.get("last_read_limit") or 0)
         last_read_anchor = (meta.get("last_read_first_message_id") or "").strip()
 
+        continuation_phrases = ["continue", "more", "what else", "before that", "earlier", "а еще", "дальше", "что еще", "до этого", "раньше"]
+
+        if any(p in low for p in continuation_phrases) and last_action == "read_channel" and last_channel:
+             return {
+                "action": "read_channel",
+                "channel": last_channel,
+                "limit": self._read_limit_from_text(low),
+                "before": last_read_anchor,
+            }
+
         if self._read_followup(low) and last_action == "read_channel" and last_channel:
-            # If summary requested specifically and we have a fresh one
             if any(k in low for k in ["сводк", "коротк", "обсуждали", "что там было", "что происходило", "что писали", "о чем говорили", "о чём говорили"]) and last_read_summary:
-                # But if they also say "more" or "earlier", we should probably read more
-                if not any(k in low for k in ["еще", "ещё", "дальше", "more", "earlier", "до этого", "раньше", "before"]):
+                if not any(k in low for k in continuation_phrases):
                     return {"action": "reply", "text": last_read_summary}
 
-            # Anchor-based pagination
             return {
                 "action": "read_channel",
                 "channel": last_channel,
@@ -798,7 +804,7 @@ class AgentPlanner:
             if now - last_summary_ts < 1200 and (current_count - last_summary_count) < 10:
                 return
 
-        recent = self.store.get_recent_history(channel_id, 30) # Fetch raw history
+        recent = self.store.get_recent_history(channel_id, 30)
         recent_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
         cur = (meta.get("summary") or "").strip()
         if not recent_text.strip():
@@ -840,7 +846,6 @@ class AgentPlanner:
             return datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
         except Exception:
             try:
-                # Fallback for SQLite CURRENT_TIMESTAMP format "YYYY-MM-DD HH:MM:SS"
                 return datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
             except Exception:
                 return 0.0
@@ -871,7 +876,7 @@ class AgentPlanner:
         active_msgs = []
         for r in reversed(recent_rows):
             ts = self._parse_db_timestamp(r.get("created_at") or "")
-            if ts == 0.0: # If created_at is missing for some reason
+            if ts == 0.0:
                 ts = now
             if now - ts > 600: # 10 min
                 break
