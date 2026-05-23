@@ -53,6 +53,7 @@ class MemoryStore:
         self.db.commit()
 
     def _setup_schema(self):
+        # history: stores message history with timestamps
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,8 +68,22 @@ class MemoryStore:
         )
         """)
 
+        # profiles: basic user metadata and traits
+        self.cur.execute("""
+        CREATE TABLE IF NOT EXISTS profiles (
+            user_id TEXT PRIMARY KEY,
+            username TEXT DEFAULT '',
+            display_name TEXT DEFAULT '',
+            preferred_name TEXT DEFAULT '',
+            relationship TEXT DEFAULT '',
+            traits TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            affinity INTEGER DEFAULT 0,
+            last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
 
-
+        # user_cards: deep social memory tracking
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS user_cards (
             user_id TEXT PRIMARY KEY,
@@ -92,6 +107,7 @@ class MemoryStore:
         )
         """)
 
+        # facts: extracted individual facts about users/subjects
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS facts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,6 +122,7 @@ class MemoryStore:
         )
         """)
 
+        # prefs: user preferences and weights
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS prefs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,6 +136,7 @@ class MemoryStore:
         )
         """)
 
+        # episodes: significant events and actions recorded by the bot
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS episodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +152,7 @@ class MemoryStore:
         )
         """)
 
+        # feedback: user feedback on bot actions
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS feedback (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,11 +167,12 @@ class MemoryStore:
         )
         """)
 
+        # channel_meta: per-channel state, summary cache, pagination, and autonomy cooldowns
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS channel_meta (
             channel_id TEXT PRIMARY KEY,
             summary TEXT DEFAULT '',
-            summary_timestamp DATETIME,
+            summary_timestamp TEXT,
             message_count INTEGER DEFAULT 0,
             last_summary_count INTEGER DEFAULT 0,
             mood TEXT DEFAULT 'calm',
@@ -169,19 +189,37 @@ class MemoryStore:
             last_read_last_message_id TEXT DEFAULT '',
             last_read_summary TEXT DEFAULT '',
             last_autonomy_count INTEGER DEFAULT 0,
-            last_autonomy_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            last_interjection_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            last_emoji_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_autonomy_at TEXT,
+            last_interjection_at TEXT,
+            last_emoji_at TEXT,
             last_interjection_type TEXT DEFAULT '',
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
 
-        # migrations for older DBs
+        # migrations for older DBs - idempotent ALTER TABLE calls
+        self._ensure_column("history", "created_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+
+        self._ensure_column("user_cards", "summary TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "interests TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "communication_style TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "topics TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "opinion TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "messages_seen INTEGER DEFAULT 0")
+
         self._ensure_column("channel_meta", "summary_timestamp TEXT")
+        self._ensure_column("channel_meta", "last_summary_count INTEGER DEFAULT 0")
         self._ensure_column("channel_meta", "last_read_anchor_message_id TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_read_first_message_id TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_read_last_message_id TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_read_summary TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_autonomy_at TEXT")
         self._ensure_column("channel_meta", "last_interjection_at TEXT")
         self._ensure_column("channel_meta", "last_emoji_at TEXT")
+        self._ensure_column("channel_meta", "last_interjection_type TEXT DEFAULT ''")
 
         self.cur.execute("""
         UPDATE channel_meta
@@ -198,26 +236,6 @@ class MemoryStore:
         SET last_emoji_at = CURRENT_TIMESTAMP
         WHERE last_emoji_at IS NULL OR last_emoji_at = ''
         """)
-        self.db.commit()
-
-        # user_cards migrations
-        self._ensure_column("user_cards", "interests TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "communication_style TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
-        self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
-
-        # other channel_meta migrations
-        self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_reaction TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_limit INTEGER DEFAULT 0")
-        self._ensure_column("channel_meta", "last_read_first_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_last_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_summary TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_autonomy_count INTEGER DEFAULT 0")
-        self._ensure_column("channel_meta", "last_autonomy_at TEXT")
-        self._ensure_column("channel_meta", "last_interjection_type TEXT DEFAULT ''")
-
         self.db.commit()
 
     def ensure_profile(self, user_id: str, username: str = "", display_name: str = "") -> None:
@@ -540,7 +558,7 @@ class MemoryStore:
     def get_recent_history_rows(self, channel_id: str, limit: int = 8):
         rows = self.cur.execute(
             """
-            SELECT role, speaker_id, speaker_name, content, attachments, id
+            SELECT role, speaker_id, speaker_name, content, attachments, created_at, id
             FROM history
             WHERE channel_id = ?
             ORDER BY id DESC

@@ -141,9 +141,15 @@ class ActionExecutor:
 
             channel_token = (action.get("channel") or "").strip()
             channel = self._resolve_channel(message.guild, channel_token) if channel_token else None
-            if not channel and self.store.get_channel_meta(str(message.channel.id)):
+            if not channel:
                 last_meta = self.store.get_channel_meta(str(message.channel.id)) or {}
-                channel = self._resolve_channel(message.guild, (last_meta.get("last_target_channel_id") or "").strip())
+                channel_id_stored = (last_meta.get("last_target_channel_id") or "").strip()
+                if channel_id_stored:
+                     channel = self._resolve_channel(message.guild, channel_id_stored)
+
+            if not channel:
+                # Default to current channel if none specified or stored
+                channel = message.channel if isinstance(message.channel, discord.TextChannel) else None
 
             if not channel:
                 return {"kind": "error", "text": "Канал не найден."}
@@ -159,8 +165,6 @@ class ActionExecutor:
             # Use a slightly larger scan window to avoid missing the tail around anchors.
             scan_limit = min(100, max(limit + 10, 20))
             items = []
-            first_message_id = ""
-            last_message_id = ""
             history_kwargs = {"limit": scan_limit, "oldest_first": False}
             if before_obj:
                 history_kwargs["before"] = before_obj

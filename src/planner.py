@@ -341,7 +341,7 @@ class AgentPlanner:
                     {"role": "user", "content": payload},
                 ],
                 temperature=0.2,
-                max_tokens=220,
+                max_tokens=320,
             )
         except Exception:
             return
@@ -651,17 +651,18 @@ class AgentPlanner:
             return any(v >= 3 for v in counts.values())
         return False
 
-    def _action_from_llm(self, obj: dict) -> dict:
+    def _action_from_llm(self, obj: dict, low: str) -> dict:
         action = (obj.get("action") or "ignore").strip().lower()
         if action == "reply":
             return {"action": "reply", "text": (obj.get("text") or "").strip()}
         if action == "remember":
             return {"action": "remember", "key": (obj.get("key") or "note").strip(), "value": (obj.get("value") or obj.get("text") or "").strip()}
         if action == "read_channel":
+            limit = int(obj.get("limit") or self._read_limit_from_text(low))
             return {
                 "action": "read_channel",
                 "channel": (obj.get("channel") or "").strip(),
-                "limit": int(obj.get("limit") or 30),
+                "limit": limit,
                 "before": (obj.get("before") or "").strip(),
             }
         if action == "send_message":
@@ -692,14 +693,15 @@ class AgentPlanner:
         last_action = (meta.get("last_action_type") or "").strip().lower()
         last_channel = (meta.get("last_target_channel_id") or "").strip()
         last_read_summary = (meta.get("last_read_summary") or "").strip()
-        last_read_limit = int(meta.get("last_read_limit") or 0)
-        last_read_anchor = (meta.get("last_read_first_message_id") or "").strip()
+        last_read_anchor = (meta.get("last_read_anchor_message_id") or "").strip()
 
         if self._read_followup(low) and last_action == "read_channel" and last_channel:
             # If summary requested specifically and we have a fresh one
-            if any(k in low for k in ["сводк", "коротк", "обсуждали", "что там было", "что происходило", "что писали", "о чем говорили", "о чём говорили"]) and last_read_summary:
+            summary_keywords = ["сводк", "коротк", "обсуждали", "что там было", "что происходило", "что писали", "о чем говорили", "о чём говорили"]
+            if any(k in low for k in summary_keywords) and last_read_summary:
                 # But if they also say "more" or "earlier", we should probably read more
-                if not any(k in low for k in ["еще", "ещё", "дальше", "more", "earlier", "до этого", "раньше", "before"]):
+                more_keywords = ["еще", "ещё", "дальше", "more", "earlier", "до этого", "раньше", "before", "what else"]
+                if not any(k in low for k in more_keywords):
                     return {"action": "reply", "text": last_read_summary}
 
             # Anchor-based pagination
@@ -737,7 +739,7 @@ class AgentPlanner:
                     return {"action": "reply", "text": cleaned}
                 continue
 
-            action = self._action_from_llm(parsed)
+            action = self._action_from_llm(parsed, low)
             if action.get("action") == "reply":
                 txt = action.get("text") or ""
                 if not txt or self.is_duplicate_response(cid, txt) or self.anchor_hit(cid, txt) or self._looks_like_echo(txt, user_text, self.store.get_recent_history(cid, 5)):
@@ -860,7 +862,7 @@ class AgentPlanner:
         last_interjection_at = self._parse_db_timestamp(meta.get("last_interjection_at"))
         last_emoji_at = self._parse_db_timestamp(meta.get("last_emoji_at"))
 
-        if now - last_autonomy_at < 120: # 2 min global
+        if now - last_autonomy_at < 120: # 2 min global autonomy cooldown
             return None
 
         recent_rows = self.store.get_recent_history_rows(cid, 20)
@@ -873,7 +875,7 @@ class AgentPlanner:
             ts = self._parse_db_timestamp(r.get("created_at") or "")
             if ts == 0.0: # If created_at is missing for some reason
                 ts = now
-            if now - ts > 600: # 10 min
+            if now - ts > 600: # 10 min window
                 break
             active_msgs.append(r)
 
@@ -886,22 +888,21 @@ class AgentPlanner:
 
         # Build participants info
         participants = []
-        seen = set()
+        seen_uids = set()
         for r in active_msgs:
             if (r.get("role") or "").lower() != "user":
                 continue
             sid = (r.get("speaker_id") or "").strip()
             sname = (r.get("speaker_name") or "").strip()
-            key = sid or sname.lower()
-            if not key or key in seen:
+            if not sid or sid in seen_uids:
                 continue
-            seen.add(key)
+            seen_uids.add(sid)
             participants.append(self.store.build_profile_card(subject_id=sid, subject_name=sname, max_facts=3))
 
         recent_text = "\n".join(
             f"{(r.get('speaker_name') or 'user')}: {(r.get('content') or '').strip()}"
             for r in reversed(active_msgs[-10:])
-            if (r.get("content") or "").strip()
+            if (r.get('content') or '').strip()
         )
 
         payload = [
@@ -932,10 +933,10 @@ class AgentPlanner:
 
         # Probabilistic decide is mostly handled by LLM, but we enforce hard cooldowns here
         if action in {"short_interject", "contextual_reply", "reply"}:
-            if now - last_interjection_at < 1200: # 20 min
+            if now - last_interjection_at < 1200: # 20 min interjection cooldown
                 return {"action": "ignore"}
         elif action == "react":
-            if now - last_emoji_at < 300: # 5 min
+            if now - last_emoji_at < 300: # 5 min emoji cooldown
                 return {"action": "ignore"}
 
         if action in {"reply", "short_interject", "contextual_reply"}:
