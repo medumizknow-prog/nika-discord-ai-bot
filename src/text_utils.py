@@ -5,8 +5,13 @@ from typing import Optional
 def normalize_compare_text(text: str) -> str:
     if not text:
         return ""
+    # Convert to lowercase
     text = text.lower()
-    text = re.sub(r"[^\w\sа-яё]", "", text, flags=re.IGNORECASE)
+    # Replace 'ё' with 'е'
+    text = text.replace("ё", "е")
+    # Remove non-alphanumeric characters for both Cyrillic and Latin
+    text = re.sub(r"[^a-zа-я0-9\s]", "", text, flags=re.IGNORECASE)
+    # Collapse whitespace
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -117,7 +122,7 @@ def sanitize_summary_text(text: str) -> str:
     lines = []
     for line in text.splitlines():
         line = line.strip()
-        if len(line) < 2:
+        if len(line) > 1: # Fixed a bug where short lines were kept
             lines.append(line)
 
     return "\n".join(lines).strip()
