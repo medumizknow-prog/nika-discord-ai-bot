@@ -129,7 +129,8 @@ class AgentPlanner:
         if not candidate:
             return True
         low = normalize_compare_text(candidate)
-        if not low or low in {"мм", "мм?", "м?", "а?", "э?", "эх?", "поняла", "понял", "ок", "ok"}:
+        # Prevent filler garbage and exact echoes
+        if not low or low in {"мм", "мм?", "м?", "а?", "э?", "эх?", "поняла", "понял", "ок", "ok", "мда", "ммм"}:
             return True
 
         # Prevent very short responses
@@ -154,44 +155,33 @@ class AgentPlanner:
         return any(
             p in low
             for p in [
-                "а еще",
-                "а ещё",
-                "еще",
-                "ещё",
-                "дальше",
-                "продолжай",
-                "что еще",
-                "что ещё",
-                "и еще",
-                "и ещё",
-                "еще раз",
-                "ещё раз",
-                "а что дальше",
-                "что дальше",
-                "подробнее",
-                "короткую сводку",
-                "сводку",
-                "что обсуждали",
-                "обсуждали",
-                "что там писали",
-                "что писали",
-                "о чем говорили",
-                "о чём говорили",
-                "что происходило",
-                "что было",
-                "расскажи что там было",
-                "расскажи что там",
                 "continue",
                 "more",
                 "what else",
                 "before that",
                 "earlier",
+                "а еще",
+                "дальше",
+                "что еще",
                 "до этого",
                 "раньше",
+                "продолжай",
+                "еще",
+                "ещё",
             ]
         )
 
     def _read_limit_from_text(self, low: str) -> int:
+        dynamic_triggers = [
+            "что обсуждали",
+            "сводка",
+            "что там было",
+            "а еще",
+            "что еще",
+            "подробнее",
+            "коротко",
+            "что происходило",
+        ]
         deep_triggers = [
             "подроб",
             "полностью",
@@ -207,30 +197,6 @@ class AgentPlanner:
             "развёрнуто",
             "детально",
             "досконально",
-            "что обсуждали",
-            "что происходило",
-            "что там писали",
-            "что писали",
-            "сводка",
-            "а еще",
-            "что еще",
-            "подробнее",
-            "коротко",
-        ]
-        summary_triggers = [
-            "дай сводку",
-            "короткую сводку",
-            "сводку",
-            "что обсуждали",
-            "обсуждали",
-            "что там было",
-            "что там писали",
-            "что писали",
-            "о чем говорили",
-            "о чём говорили",
-            "расскажи",
-            "поясни",
-            "что происходило",
         ]
         latest_triggers = [
             "последнее",
@@ -239,10 +205,10 @@ class AgentPlanner:
             "last",
             "latest",
         ]
+        if any(p in low for p in dynamic_triggers):
+            return 65
         if any(p in low for p in deep_triggers):
             return 80
-        if any(p in low for p in summary_triggers):
-            return 50
         if any(p in low for p in latest_triggers):
             return 1
         return 30
@@ -596,9 +562,6 @@ class AgentPlanner:
             {"role": "system", "content": CHAT_SYSTEM_PROMPT},
             {"role": "system", "content": self.build_snapshot(message, user_text)},
         ]
-        summary = self.store.get_summary(cid)
-        if summary:
-            msgs.append({"role": "system", "content": f"Сводка канала: {summary}"})
         recent = self.store.get_recent_history(cid, 5 if is_short_text(user_text) else self.settings.max_recent_turns)
         recent = self._trim_recent_for_current_user(recent, user_text)
         msgs.extend(recent)
@@ -619,9 +582,6 @@ class AgentPlanner:
             {"role": "system", "content": ACTION_SYSTEM_PROMPT},
             {"role": "system", "content": self.build_snapshot(message, user_text)},
         ]
-        summary = self.store.get_summary(cid)
-        if summary:
-            msgs.append({"role": "system", "content": f"Сводка канала: {summary}"})
         recent = self.store.get_recent_history(cid, 5 if is_short_text(user_text) else self.settings.max_recent_turns)
         recent = self._trim_recent_for_current_user(recent, user_text)
         msgs.extend(recent)
@@ -693,7 +653,7 @@ class AgentPlanner:
         last_channel = (meta.get("last_target_channel_id") or "").strip()
         last_read_summary = (meta.get("last_read_summary") or "").strip()
         last_read_limit = int(meta.get("last_read_limit") or 0)
-        last_read_anchor = (meta.get("last_read_first_message_id") or "").strip()
+        last_read_anchor = (meta.get("last_read_anchor_message_id") or "").strip()
 
         if self._read_followup(low) and last_action == "read_channel" and last_channel:
             # If summary requested specifically and we have a fresh one
@@ -863,13 +823,16 @@ class AgentPlanner:
         if now - last_autonomy_at < 120: # 2 min global
             return None
 
-        recent_rows = self.store.get_recent_history_rows(cid, 20)
+        recent_rows = self.store.get_recent_history_rows(cid, 25)
         if not recent_rows:
             return None
 
         # Detect active conversation: >=5 messages, >=2 distinct users, within last 10 minutes
+        # Rule: never trigger on bot messages, never self-trigger (filter out assistant)
         active_msgs = []
         for r in reversed(recent_rows):
+            if (r.get("role") or "").lower() == "assistant":
+                continue
             ts = self._parse_db_timestamp(r.get("created_at") or "")
             if ts == 0.0: # If created_at is missing for some reason
                 ts = now
@@ -880,7 +843,7 @@ class AgentPlanner:
         if len(active_msgs) < 5:
             return None
 
-        participants_ids = {r.get("speaker_id") for r in active_msgs if (r.get("role") or "").lower() == "user"}
+        participants_ids = {r.get("speaker_id") for r in active_msgs if (r.get("role") or "").lower() == "user" and r.get("speaker_id")}
         if len(participants_ids) < 2:
             return None
 
@@ -930,7 +893,7 @@ class AgentPlanner:
         raw = await self.llm.chat_json(prompt, temperature=0.3, max_tokens=140)
         action = (raw.get("action") or "ignore").strip().lower()
 
-        # Probabilistic decide is mostly handled by LLM, but we enforce hard cooldowns here
+        # Hard cooldowns: emoji (5m), interjection (20m), global (2m)
         if action in {"short_interject", "contextual_reply", "reply"}:
             if now - last_interjection_at < 1200: # 20 min
                 return {"action": "ignore"}
