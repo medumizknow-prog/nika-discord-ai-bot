@@ -54,6 +54,16 @@ class MemoryStore:
 
     def _setup_schema(self):
         self.cur.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY
+        )
+        """)
+        row = self.cur.execute("SELECT version FROM schema_version").fetchone()
+        if not row:
+            self.cur.execute("INSERT INTO schema_version (version) VALUES (1)")
+            self.db.commit()
+
+        self.cur.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             channel_id TEXT NOT NULL,
@@ -177,11 +187,20 @@ class MemoryStore:
         )
         """)
 
-        # migrations for older DBs
+        # defensive migrations
         self._ensure_column("channel_meta", "summary_timestamp TEXT")
         self._ensure_column("channel_meta", "last_read_anchor_message_id TEXT DEFAULT ''")
         self._ensure_column("channel_meta", "last_interjection_at TEXT")
         self._ensure_column("channel_meta", "last_emoji_at TEXT")
+        self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_reaction TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_read_limit INTEGER DEFAULT 0")
+        self._ensure_column("channel_meta", "last_read_first_message_id TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_read_last_message_id TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_read_summary TEXT DEFAULT ''")
+        self._ensure_column("channel_meta", "last_autonomy_count INTEGER DEFAULT 0")
+        self._ensure_column("channel_meta", "last_autonomy_at TEXT")
+        self._ensure_column("channel_meta", "last_interjection_type TEXT DEFAULT ''")
 
         self.cur.execute("""
         UPDATE channel_meta
@@ -198,7 +217,6 @@ class MemoryStore:
         SET last_emoji_at = CURRENT_TIMESTAMP
         WHERE last_emoji_at IS NULL OR last_emoji_at = ''
         """)
-        self.db.commit()
 
         # user_cards migrations
         self._ensure_column("user_cards", "interests TEXT DEFAULT ''")
@@ -206,17 +224,8 @@ class MemoryStore:
         self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
         self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
         self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
-
-        # other channel_meta migrations
-        self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_reaction TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_limit INTEGER DEFAULT 0")
-        self._ensure_column("channel_meta", "last_read_first_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_last_message_id TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_read_summary TEXT DEFAULT ''")
-        self._ensure_column("channel_meta", "last_autonomy_count INTEGER DEFAULT 0")
-        self._ensure_column("channel_meta", "last_autonomy_at TEXT")
-        self._ensure_column("channel_meta", "last_interjection_type TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "topics TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "opinion TEXT DEFAULT ''")
 
         self.db.commit()
 
