@@ -86,12 +86,12 @@ class NikaDiscordClient(discord.Client):
 
         if not engage:
             auto = await self.planner.run_autonomy(message)
-            if auto.get("action") in {"react", "post_thought", "reply"}:
+            if auto.get("action") in {"react", "post_thought", "reply", "short_interject", "contextual_reply"}:
                 try:
                     result = await self.executor.execute(message, auto)
 
-                    # Silent autonomy for react/post_thought, visible interjection for reply.
-                    if auto.get("action") == "reply" and result.get("kind") == "reply" and result.get("text"):
+                    # Silent autonomy for react/post_thought, visible interjection for reply/short_interject/contextual_reply.
+                    if auto.get("action") in {"reply", "short_interject", "contextual_reply"} and result.get("kind") == "reply" and result.get("text"):
                         reply_text = strip_output_labels(clean_response(result.get("text", "")) or result.get("text", "").strip())
                         if reply_text:
                             await self.executor.safe_reply(message, reply_text)

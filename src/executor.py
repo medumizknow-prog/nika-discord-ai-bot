@@ -212,6 +212,15 @@ class ActionExecutor:
                 last_message_id=last_message_id,
             )
 
+            # Also store summary state
+            self.store.update_channel_meta(
+                str(message.channel.id),
+                last_action_type="read_channel",
+                last_target_channel_id=str(channel.id),
+                last_read_limit=limit,
+                last_read_anchor_message_id=first_message_id
+            )
+
             return {
                 "kind": "observation",
                 "channel_id": str(channel.id),

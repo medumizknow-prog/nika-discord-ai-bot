@@ -126,24 +126,32 @@ class AgentPlanner:
         return ""
 
     def _looks_like_echo(self, candidate: str, user_text: str, recent) -> bool:
+        """Heuristic to detect exact echoes, repeated responses, and degenerate fillers."""
         if not candidate:
             return True
-        low = normalize_compare_text(candidate)
-        if not low or low in {"мм", "мм?", "м?", "а?", "э?", "эх?", "поняла", "понял", "ок", "ok"}:
+
+        norm_candidate = normalize_compare_text(candidate)
+
+        # Prevent degenerate fillers
+        fillers = {"мм", "мм?", "м?", "а?", "э?", "эх?", "поняла", "понял", "ок", "ok", "мда", "хм"}
+        if not norm_candidate or norm_candidate in fillers:
             return True
 
-        # Prevent very short responses
-        if len(low) < 2:
+        # Prevent very short responses (< 2 normalized chars)
+        if len(norm_candidate) < 2:
             return True
 
-        if is_too_similar(candidate, user_text, threshold=0.80):
+        # Prevent exact or near-exact echoes of user's text
+        if user_text and is_too_similar(candidate, user_text, threshold=0.80):
             return True
 
-        # Check against recent history to prevent repetition
+        # Prevent repeating itself based on recent history
         for row in (recent or []):
-            if is_too_similar(candidate, row.get("content") or "", threshold=0.85):
+            content = row.get("content") or ""
+            if is_too_similar(candidate, content, threshold=0.85):
                 return True
 
+        # Prevent repeating last assistant reply specifically
         last_assistant = self._last_assistant_reply(recent)
         if last_assistant and is_too_similar(candidate, last_assistant, threshold=0.85):
             return True
@@ -192,6 +200,7 @@ class AgentPlanner:
         )
 
     def _read_limit_from_text(self, low: str) -> int:
+        """Determines the number of messages to read based on the user's query."""
         deep_triggers = [
             "подроб",
             "полностью",
@@ -207,30 +216,28 @@ class AgentPlanner:
             "развёрнуто",
             "детально",
             "досконально",
+        ]
+        # Dynamically increase read window to 50–80 for these keywords
+        summary_triggers = [
             "что обсуждали",
-            "что происходило",
-            "что там писали",
-            "что писали",
             "сводка",
+            "что там было",
             "а еще",
+            "а ещё",
             "что еще",
+            "что ещё",
             "подробнее",
             "коротко",
-        ]
-        summary_triggers = [
+            "что происходило",
             "дай сводку",
             "короткую сводку",
-            "сводку",
-            "что обсуждали",
             "обсуждали",
-            "что там было",
             "что там писали",
             "что писали",
             "о чем говорили",
             "о чём говорили",
             "расскажи",
             "поясни",
-            "что происходило",
         ]
         latest_triggers = [
             "последнее",
@@ -242,10 +249,11 @@ class AgentPlanner:
         if any(p in low for p in deep_triggers):
             return 80
         if any(p in low for p in summary_triggers):
-            return 50
+            # Dynamic range 50-80
+            return 60 if "подробнее" in low else 50
         if any(p in low for p in latest_triggers):
             return 1
-        return 30
+        return 30 # default limit
 
     def _extract_user_hints(self, user_text: str) -> List[str]:
         low = (user_text or "").lower()
@@ -360,6 +368,7 @@ class AgentPlanner:
         activity_level = sanitize_summary_text(raw.get("activity_level") or "")
         behaviors = sanitize_summary_text(raw.get("behaviors") or "")
         notes = sanitize_summary_text(raw.get("notes") or "")
+        affinity_raw = raw.get("affinity")
         confidence_raw = raw.get("confidence")
         try:
             confidence = float(confidence_raw) if confidence_raw is not None else 0.0
@@ -396,6 +405,12 @@ class AgentPlanner:
             existing_note = (self.store.get_user_card(uid) or {}).get("notes") or ""
             merged_notes = f"{existing_note}; {notes}".strip("; ").strip()
             updates["notes"] = merged_notes
+        if affinity_raw is not None:
+            try:
+                updates["affinity"] = int(affinity_raw)
+            except Exception:
+                pass
+
         if confidence:
             # Keep a lightweight confidence marker in notes if the summary is still being formed.
             if not notes:
@@ -696,18 +711,28 @@ class AgentPlanner:
         last_read_anchor = (meta.get("last_read_first_message_id") or "").strip()
 
         if self._read_followup(low) and last_action == "read_channel" and last_channel:
+            # True pagination: use anchor-based reading for continuation phrases
+            continuation_phrases = [
+                "continue", "more", "what else", "before that", "earlier",
+                "а еще", "а ещё", "дальше", "что еще", "что ещё", "до этого", "раньше"
+            ]
+
+            is_continuation = any(p in low for p in continuation_phrases)
+
             # If summary requested specifically and we have a fresh one
             if any(k in low for k in ["сводк", "коротк", "обсуждали", "что там было", "что происходило", "что писали", "о чем говорили", "о чём говорили"]) and last_read_summary:
-                # But if they also say "more" or "earlier", we should probably read more
-                if not any(k in low for k in ["еще", "ещё", "дальше", "more", "earlier", "до этого", "раньше", "before"]):
+                # But if they also say a continuation phrase, we should probably read more (older messages)
+                if not is_continuation:
                     return {"action": "reply", "text": last_read_summary}
 
-            # Anchor-based pagination
+            # Use anchor-based pagination if it's a continuation or specifically requested "before/earlier"
+            anchor = last_read_anchor if (is_continuation or "раньше" in low or "до этого" in low or "earlier" in low or "before" in low) else ""
+
             return {
                 "action": "read_channel",
                 "channel": last_channel,
                 "limit": self._read_limit_from_text(low),
-                "before": last_read_anchor,
+                "before": anchor,
             }
 
         # Bounded retries for duplicate/echo prevention
@@ -784,6 +809,7 @@ class AgentPlanner:
         return f"В {channel_name} обсуждали: " + "; ".join(lines[-3:])
 
     async def summarize_channel(self, channel_id: str, force: bool = False):
+        """Generates a summary of the channel's recent history, using a 20-minute cache."""
         meta = self.store.get_channel_meta(channel_id) or {}
 
         import time
@@ -793,12 +819,16 @@ class AgentPlanner:
         last_summary_count = int(meta.get("last_summary_count") or 0)
         current_count = int(meta.get("message_count") or 0)
 
-        # Cache for 20 minutes unless significant activity (>10 new messages)
+        # Cache for 20 minutes (1200s)
+        # Invalidate if significant new activity (>10 new messages)
         if not force and last_summary_ts > 0:
             if now - last_summary_ts < 1200 and (current_count - last_summary_count) < 10:
                 return
 
-        recent = self.store.get_recent_history(channel_id, 30) # Fetch raw history
+        # Fetch history for summary PASS via LLM
+        # We read a bit more for a better summary if it was invalidated by count
+        read_limit = 50 if (current_count - last_summary_count) >= 10 else 30
+        recent = self.store.get_recent_history(channel_id, read_limit)
         recent_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
         cur = (meta.get("summary") or "").strip()
         if not recent_text.strip():
@@ -820,6 +850,7 @@ class AgentPlanner:
             summary = self._fallback_summary_from_recent(recent)
 
         if summary and not self._is_bad_summary(summary):
+            # Persist summary
             import datetime
             self.store.update_channel_meta(
                 channel_id,
@@ -846,6 +877,7 @@ class AgentPlanner:
                 return 0.0
 
     def maybe_autonomy_prompt(self, message: discord.Message):
+        """Checks if autonomy should be triggered based on conversation activity and cooldowns."""
         if not self.settings.autonomy_enabled or message.author.bot or isinstance(message.channel, discord.DMChannel):
             return None
 
@@ -860,7 +892,8 @@ class AgentPlanner:
         last_interjection_at = self._parse_db_timestamp(meta.get("last_interjection_at"))
         last_emoji_at = self._parse_db_timestamp(meta.get("last_emoji_at"))
 
-        if now - last_autonomy_at < 120: # 2 min global
+        # Global autonomy cooldown: 2 min
+        if now - last_autonomy_at < 120:
             return None
 
         recent_rows = self.store.get_recent_history_rows(cid, 20)
@@ -868,20 +901,28 @@ class AgentPlanner:
             return None
 
         # Detect active conversation: >=5 messages, >=2 distinct users, within last 10 minutes
+        # We also ensure we don't count bot messages in the active window count for triggers
         active_msgs = []
+        user_msgs_count = 0
+        participants_ids = set()
+
         for r in reversed(recent_rows):
             ts = self._parse_db_timestamp(r.get("created_at") or "")
-            if ts == 0.0: # If created_at is missing for some reason
+            if ts == 0.0:
                 ts = now
-            if now - ts > 600: # 10 min
+            if now - ts > 600: # 10 min window
                 break
+
             active_msgs.append(r)
+            role = (r.get("role") or "").lower()
+            if role == "user":
+                user_msgs_count += 1
+                sid = r.get("speaker_id")
+                if sid:
+                    participants_ids.add(sid)
 
-        if len(active_msgs) < 5:
-            return None
-
-        participants_ids = {r.get("speaker_id") for r in active_msgs if (r.get("role") or "").lower() == "user"}
-        if len(participants_ids) < 2:
+        # Rule: >=5 messages AND >=2 distinct users
+        if user_msgs_count < 5 or len(participants_ids) < 2:
             return None
 
         # Build participants info
@@ -919,6 +960,7 @@ class AgentPlanner:
         return payload, last_interjection_at, last_emoji_at
 
     async def run_autonomy(self, message: discord.Message) -> Dict[str, Any]:
+        """Runs the autonomy logic and returns an action if decided. Includes bounded retries."""
         res = self.maybe_autonomy_prompt(message)
         if not res:
             return {"action": "ignore"}
@@ -927,24 +969,41 @@ class AgentPlanner:
         import time
         now = time.time()
 
-        raw = await self.llm.chat_json(prompt, temperature=0.3, max_tokens=140)
-        action = (raw.get("action") or "ignore").strip().lower()
-
-        # Probabilistic decide is mostly handled by LLM, but we enforce hard cooldowns here
-        if action in {"short_interject", "contextual_reply", "reply"}:
-            if now - last_interjection_at < 1200: # 20 min
-                return {"action": "ignore"}
-        elif action == "react":
-            if now - last_emoji_at < 300: # 5 min
-                return {"action": "ignore"}
-
-        if action in {"reply", "short_interject", "contextual_reply"}:
-            text = (raw.get("text") or raw.get("message") or "").strip()
-            if text and not self._looks_like_echo(text, "", self.store.get_recent_history(str(message.channel.id), 5)):
-                return {"action": "reply", "text": text}
+        # Pre-check cooldowns to save tokens if both are on cooldown
+        on_inter_cd = (now - last_interjection_at < 1200)
+        on_emoji_cd = (now - last_emoji_at < 300)
+        if on_inter_cd and on_emoji_cd:
             return {"action": "ignore"}
 
-        if action == "react" and (raw.get("reaction") or "").strip():
-            return {"action": "react", "reaction": raw.get("reaction").strip()}
+        # Bounded retries: up to 2 attempts if duplicate/degenerate response is generated
+        for attempt in range(2):
+            try:
+                raw = await self.llm.chat_json(prompt, temperature=0.4 + (attempt * 0.1), max_tokens=140)
+            except Exception:
+                return {"action": "ignore"}
+
+            action = (raw.get("action") or "ignore").strip().lower()
+
+            # Enforce hard cooldowns
+            if action in {"short_interject", "contextual_reply", "reply"}:
+                if on_inter_cd:
+                    return {"action": "ignore"}
+            elif action == "react":
+                if on_emoji_cd:
+                    return {"action": "ignore"}
+
+            if action in {"reply", "short_interject", "contextual_reply"}:
+                text = (raw.get("text") or raw.get("message") or "").strip()
+                if text:
+                    # Duplicate / degenerate guard
+                    if not self._looks_like_echo(text, "", self.store.get_recent_history(str(message.channel.id), 5)):
+                        return {"action": action, "text": text, "kind": "reply"}
+                # If duplicate/degenerate, retry or fall back to silence
+                continue
+
+            if action == "react" and (raw.get("reaction") or "").strip():
+                return {"action": "react", "reaction": raw.get("reaction").strip(), "kind": "status"}
+
+            break # If ignore or other non-reply action, no need to retry
 
         return {"action": "ignore"}
