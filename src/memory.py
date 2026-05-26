@@ -206,6 +206,8 @@ class MemoryStore:
         self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
         self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
         self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "topics TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "affinity INTEGER DEFAULT 0")
 
         # other channel_meta migrations
         self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
