@@ -129,7 +129,7 @@ class AgentPlanner:
         if not candidate:
             return True
         low = normalize_compare_text(candidate)
-        if not low or low in {"мм", "мм?", "м?", "а?", "э?", "эх?", "поняла", "понял", "ок", "ok"}:
+        if not low or low in {"мм", "мм?", "м?", "а?", "э?", "эх?", "поняла", "понял", "ок", "ok", "м", "ммм"}:
             return True
 
         # Prevent very short responses
@@ -188,6 +188,7 @@ class AgentPlanner:
                 "earlier",
                 "до этого",
                 "раньше",
+                "дальше",
             ]
         )
 
@@ -216,6 +217,7 @@ class AgentPlanner:
             "что еще",
             "подробнее",
             "коротко",
+            "что там было",
         ]
         summary_triggers = [
             "дай сводку",
@@ -700,6 +702,7 @@ class AgentPlanner:
             if any(k in low for k in ["сводк", "коротк", "обсуждали", "что там было", "что происходило", "что писали", "о чем говорили", "о чём говорили"]) and last_read_summary:
                 # But if they also say "more" or "earlier", we should probably read more
                 if not any(k in low for k in ["еще", "ещё", "дальше", "more", "earlier", "до этого", "раньше", "before"]):
+                    # Answer naturally using the summary
                     return {"action": "reply", "text": last_read_summary}
 
             # Anchor-based pagination
@@ -712,6 +715,7 @@ class AgentPlanner:
 
         # Bounded retries for duplicate/echo prevention
         for attempt in range(2):
+            # If the response was rejected as an echo/duplicate, try with higher temperature
             msgs = self.build_chat_messages(message, user_text)
             raw = await self.llm.chat(msgs, temperature=0.3 + (attempt * 0.1), max_tokens=220, frequency_penalty=0.5, presence_penalty=0.3)
             if not raw:
@@ -924,27 +928,32 @@ class AgentPlanner:
             return {"action": "ignore"}
 
         prompt, last_interjection_at, last_emoji_at = res
-        import time
-        now = time.time()
 
-        raw = await self.llm.chat_json(prompt, temperature=0.3, max_tokens=140)
-        action = (raw.get("action") or "ignore").strip().lower()
+        # Bounded retries for quality/echo prevention
+        for attempt in range(2):
+            raw = await self.llm.chat_json(prompt, temperature=0.3 + (attempt * 0.1), max_tokens=140)
+            action = (raw.get("action") or "ignore").strip().lower()
 
-        # Probabilistic decide is mostly handled by LLM, but we enforce hard cooldowns here
-        if action in {"short_interject", "contextual_reply", "reply"}:
-            if now - last_interjection_at < 1200: # 20 min
-                return {"action": "ignore"}
-        elif action == "react":
-            if now - last_emoji_at < 300: # 5 min
-                return {"action": "ignore"}
+            import time
+            now = time.time()
 
-        if action in {"reply", "short_interject", "contextual_reply"}:
-            text = (raw.get("text") or raw.get("message") or "").strip()
-            if text and not self._looks_like_echo(text, "", self.store.get_recent_history(str(message.channel.id), 5)):
-                return {"action": "reply", "text": text}
+            # Probabilistic decide is mostly handled by LLM, but we enforce hard cooldowns here
+            if action in {"short_interject", "contextual_reply", "reply"}:
+                if now - last_interjection_at < 1200: # 20 min
+                    return {"action": "ignore"}
+            elif action == "react":
+                if now - last_emoji_at < 300: # 5 min
+                    return {"action": "ignore"}
+
+            if action in {"reply", "short_interject", "contextual_reply"}:
+                text = (raw.get("text") or raw.get("message") or "").strip()
+                if text and not self._looks_like_echo(text, "", self.store.get_recent_history(str(message.channel.id), 5)):
+                    return {"action": "reply", "text": text}
+                continue # Retry if echo detected
+
+            if action == "react" and (raw.get("reaction") or "").strip():
+                return {"action": "react", "reaction": raw.get("reaction").strip()}
+
             return {"action": "ignore"}
-
-        if action == "react" and (raw.get("reaction") or "").strip():
-            return {"action": "react", "reaction": raw.get("reaction").strip()}
 
         return {"action": "ignore"}

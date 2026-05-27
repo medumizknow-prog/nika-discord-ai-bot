@@ -157,7 +157,7 @@ class ActionExecutor:
             before_obj = discord.Object(id=int(before)) if before.isdigit() else None
 
             # Use a slightly larger scan window to avoid missing the tail around anchors.
-            scan_limit = min(100, max(limit + 10, 20))
+            scan_limit = min(100, max(limit + 10, 30))
             items = []
             first_message_id = ""
             last_message_id = ""
