@@ -6,7 +6,8 @@ def normalize_compare_text(text: str) -> str:
     if not text:
         return ""
     text = text.lower()
-    text = re.sub(r"[^\w\sа-яё]", "", text, flags=re.IGNORECASE)
+    text = text.replace("ё", "е")
+    text = re.sub(r"[^\w\sа-я]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 

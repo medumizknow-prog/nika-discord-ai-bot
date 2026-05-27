@@ -53,6 +53,17 @@ class MemoryStore:
         self.db.commit()
 
     def _setup_schema(self):
+        # Versioning for migrations
+        self.cur.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY
+        )
+        """)
+        row = self.cur.execute("SELECT version FROM schema_version").fetchone()
+        if not row:
+            self.cur.execute("INSERT INTO schema_version (version) VALUES (1)")
+            self.db.commit()
+
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -206,6 +217,8 @@ class MemoryStore:
         self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
         self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
         self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "topics TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "affinity INTEGER DEFAULT 0")
 
         # other channel_meta migrations
         self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
@@ -282,6 +295,16 @@ class MemoryStore:
             UPDATE profiles
             SET affinity = COALESCE(affinity, 0) + ?,
                 last_seen = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+            """,
+            (delta, user_id),
+        )
+        self.cur.execute(
+            """
+            UPDATE user_cards
+            SET affinity = COALESCE(affinity, 0) + ?,
+                last_seen = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
             WHERE user_id = ?
             """,
             (delta, user_id),
