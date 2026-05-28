@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 
 import discord
 
@@ -77,6 +78,8 @@ class NikaDiscordClient(discord.Client):
             self.settings.bot_aliases,
             self.settings.watch_channel_name,
         )
+
+        # Trigger summary pipeline if needed
         if self.planner.should_summarize(channel_id):
             asyncio.create_task(self.planner.summarize_channel(channel_id))
 
@@ -85,24 +88,17 @@ class NikaDiscordClient(discord.Client):
         engage = engage or called or bool(preview_action)
 
         if not engage:
+            # Bot was not mentioned, run autonomy logic
             auto = await self.planner.run_autonomy(message)
-            if auto.get("action") in {"react", "post_thought", "reply"}:
+            if auto.get("action") in {"react", "reply"}:
                 try:
                     result = await self.executor.execute(message, auto)
 
-                    # Silent autonomy for react/post_thought, visible interjection for reply.
                     if auto.get("action") == "reply" and result.get("kind") == "reply" and result.get("text"):
                         reply_text = strip_output_labels(clean_response(result.get("text", "")) or result.get("text", "").strip())
                         if reply_text:
                             await self.executor.safe_reply(message, reply_text)
                             self.store.add_message(channel_id, guild_id, "assistant", str(self.user.id) if self.user else "", self.settings.bot_name, reply_text)
-
-                    elif result.get("kind") == "status" and result.get("text") and auto.get("action") in {"react", "post_thought"}:
-                        self.store.add_message(channel_id, guild_id, "assistant", str(self.user.id) if self.user else "", self.settings.bot_name, result["text"])
-
-                    elif result.get("kind") == "status" and result.get("text"):
-                        # Future non-silent autonomous actions may use this.
-                        self.store.add_message(channel_id, guild_id, "assistant", str(self.user.id) if self.user else "", self.settings.bot_name, result["text"])
 
                     # Mark cooldown after autonomous intervention.
                     current_meta = self.store.get_channel_meta(channel_id) or {}
@@ -132,6 +128,7 @@ class NikaDiscordClient(discord.Client):
             if reply_text:
                 await self.executor.safe_reply(message, reply_text)
                 self.store.add_message(channel_id, guild_id, "assistant", str(self.user.id) if self.user else "", self.settings.bot_name, reply_text)
+                self.store.update_channel_meta(channel_id, last_action_type="reply")
 
         elif kind == "observation":
             composed_raw = await self.planner.compose_read_response(message, planner_text, action, result)
@@ -139,15 +136,11 @@ class NikaDiscordClient(discord.Client):
             await self.executor.safe_reply(message, composed)
             self.store.add_message(channel_id, guild_id, "assistant", str(self.user.id) if self.user else "", self.settings.bot_name, composed)
 
-            # Cache the summary for follow-ups and future snapshot context.
+            # Persist summary for follow-ups
             self.store.update_channel_meta(
                 channel_id,
                 last_read_summary=composed,
-                last_action_type="read_channel",
-                last_target_channel_id=str(result.get("channel_id") or ""),
-                last_read_limit=int(result.get("limit") or 0),
-                last_read_first_message_id=str(result.get("first_message_id") or ""),
-                last_read_last_message_id=str(result.get("last_message_id") or ""),
+                last_action_type="read_channel"
             )
 
         elif kind == "status":
@@ -168,6 +161,6 @@ class NikaDiscordClient(discord.Client):
         elif kind == "error":
             await self.executor.safe_reply(message, strip_output_labels(clean_response(result.get("text", "ошибка")) or result.get("text", "ошибка").strip()))
 
-        # Keep the channel summary fresh.
+        # Final summary check
         if self.planner.should_summarize(channel_id):
             asyncio.create_task(self.planner.summarize_channel(channel_id))

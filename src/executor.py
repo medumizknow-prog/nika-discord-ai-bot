@@ -112,6 +112,8 @@ class ActionExecutor:
             return {"kind": "ignore"}
 
         if act == "reply":
+            # Persist last_action_type for replies too
+            self.store.update_channel_meta(str(message.channel.id), last_action_type="reply")
             return {"kind": "reply", "text": (action.get("text") or "").strip()}
 
         if act == "remember":
@@ -156,11 +158,8 @@ class ActionExecutor:
             before = (action.get("before") or "").strip()
             before_obj = discord.Object(id=int(before)) if before.isdigit() else None
 
-            # Use a slightly larger scan window to avoid missing the tail around anchors.
             scan_limit = min(100, max(limit + 10, 20))
             items = []
-            first_message_id = ""
-            last_message_id = ""
             history_kwargs = {"limit": scan_limit, "oldest_first": False}
             if before_obj:
                 history_kwargs["before"] = before_obj
@@ -170,23 +169,20 @@ class ActionExecutor:
                     continue
                 author = msg.author.display_name if hasattr(msg.author, "display_name") else msg.author.name
                 body = (msg.content or "").strip() or "[без текста]"
-                items.append(
-                    {
-                        "id": str(msg.id),
-                        "author": author,
-                        "text": body,
-                    }
-                )
+                items.append({"id": str(msg.id), "author": author, "text": body})
                 if len(items) >= limit:
                     break
+
+            last_meta = self.store.get_channel_meta(str(message.channel.id)) or {}
 
             if not items:
                 self.store.record_read_state(
                     str(message.channel.id),
                     target_channel_id=str(channel.id),
                     limit=limit,
-                    first_message_id="",
-                    last_message_id="",
+                    anchor_message_id=last_meta.get("last_read_anchor_message_id") or before,
+                    first_message_id=last_meta.get("last_read_first_message_id") or "",
+                    last_message_id=last_meta.get("last_read_last_message_id") or "",
                 )
                 return {
                     "kind": "observation",
@@ -207,7 +203,7 @@ class ActionExecutor:
                 str(message.channel.id),
                 target_channel_id=str(channel.id),
                 limit=limit,
-                anchor_message_id=first_message_id, # Oldest of current batch is anchor for "earlier"
+                anchor_message_id=first_message_id,
                 first_message_id=first_message_id,
                 last_message_id=last_message_id,
             )
@@ -296,25 +292,13 @@ class ActionExecutor:
             channel_token = (action.get("channel") or "").strip()
             if not reaction:
                 return {"kind": "error", "text": "Реакция не указана."}
-            aliases = {
-                "clown": "🤡",
-                "clown emoji": "🤡",
-                "clown face": "🤡",
-                "emoji clown": "🤡",
-                "fire": "🔥",
-                "skull": "💀",
-                "heart": "❤️",
-                "thumbsup": "👍",
-                "thumbs up": "👍",
-            }
+            aliases = {"clown": "🤡", "fire": "🔥", "skull": "💀", "heart": "❤️", "thumbsup": "👍"}
             reaction = aliases.get(reaction.lower(), reaction)
             target_message = message
             target_channel_id = str(message.channel.id)
             search_channel = None
             if channel_token and message.guild:
                 search_channel = self._resolve_channel(message.guild, channel_token)
-                if not search_channel:
-                    return {"kind": "error", "text": "Канал не найден."}
             elif message.guild and isinstance(message.channel, discord.TextChannel):
                 search_channel = message.channel
 
@@ -328,59 +312,20 @@ class ActionExecutor:
 
             try:
                 await target_message.add_reaction(reaction)
-                self.store.set_last_target(str(message.channel.id), target_channel_id=target_channel_id)
-                self.store.update_channel_meta(
-                    str(message.channel.id),
-                    last_action_type="react",
-                    last_reaction=reaction,
-                    last_target_channel_id=target_channel_id,
-                )
-                self.store.add_episode(
-                    str(message.channel.id),
-                    str(message.guild.id) if message.guild else "",
-                    str(message.author.id),
-                    message.author.display_name,
-                    f"Поставила реакцию {reaction}",
-                    episode_type="action",
-                    importance=0.6,
-                    emotion="neutral",
-                )
+                self.store.update_channel_meta(str(message.channel.id), last_action_type="react", last_reaction=reaction, last_target_channel_id=target_channel_id)
+                self.store.add_episode(str(message.channel.id), str(message.guild.id) if message.guild else "", str(message.author.id), message.author.display_name, f"Поставила реакцию {reaction}", episode_type="action", importance=0.6, emotion="neutral")
                 return {"kind": "status", "text": f"добавила {reaction}"}
             except Exception as e:
                 return {"kind": "error", "text": f"не смогла поставить реакцию: {e}"}
 
         if act == "post_thought":
-            if not message.guild:
-                return {"kind": "error", "text": "Это работает только на сервере."}
+            if not message.guild: return {"kind": "error", "text": "Это работает только на сервере."}
             text = (action.get("text") or "").strip()
-            if not text:
-                return {"kind": "error", "text": "Мысль пустая."}
+            if not text: return {"kind": "error", "text": "Мысль пустая."}
             channel = self._resolve_channel_by_name(message.guild, self.settings.thought_channel_name)
-            if not channel:
-                return {"kind": "error", "text": "Не нашла свой канал."}
-            perms = channel.permissions_for(message.guild.me) if message.guild.me else None
-            if perms and not perms.send_messages:
-                return {"kind": "error", "text": "Не могу писать в свой канал."}
+            if not channel: return {"kind": "error", "text": "Не нашла свой канал."}
             await self.safe_send(channel, text)
-            current = self.store.get_channel_meta(str(message.channel.id)) or {}
-            self.store.update_channel_meta(str(message.channel.id), last_bot_post_count=int(current.get("last_bot_post_count") or 0) + 1)
             self.store.update_channel_meta(str(message.channel.id), last_action_type="post_thought")
-            self.store.add_episode(
-                str(message.channel.id),
-                str(message.guild.id) if message.guild else "",
-                str(message.author.id),
-                message.author.display_name,
-                f"Подумала и написала в свой канал: {text}",
-                episode_type="thought",
-                importance=0.5,
-                emotion="neutral",
-            )
-            return {
-                "kind": "status",
-                "text": f"мысль отправлена в {channel.mention}",
-                "channel_id": str(channel.id),
-                "channel_name": channel.name,
-                "sent_text": text,
-            }
+            return {"kind": "status", "text": f"мысль отправлена в {channel.mention}"}
 
         return {"kind": "ignore"}
