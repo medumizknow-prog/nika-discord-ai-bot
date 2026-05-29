@@ -6,7 +6,11 @@ def normalize_compare_text(text: str) -> str:
     if not text:
         return ""
     text = text.lower()
-    text = re.sub(r"[^\w\sа-яё]", "", text, flags=re.IGNORECASE)
+    # Replace 'ё' with 'е' for more robust comparison
+    text = text.replace("ё", "е")
+    # Remove non-alphanumeric characters but keep Cyrillic and Latin
+    text = re.sub(r"[^\w\sа-яa-z]", "", text, flags=re.IGNORECASE)
+    # Collapse multiple whitespaces
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
