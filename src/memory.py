@@ -53,6 +53,13 @@ class MemoryStore:
         self.db.commit()
 
     def _setup_schema(self):
+        # Migration version tracking
+        self.cur.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY
+        )
+        """)
+
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,7 +74,20 @@ class MemoryStore:
         )
         """)
 
-
+        # Legacy profiles table
+        self.cur.execute("""
+        CREATE TABLE IF NOT EXISTS profiles (
+            user_id TEXT PRIMARY KEY,
+            username TEXT DEFAULT '',
+            display_name TEXT DEFAULT '',
+            preferred_name TEXT DEFAULT '',
+            relationship TEXT DEFAULT '',
+            traits TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            affinity INTEGER DEFAULT 0,
+            last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
 
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS user_cards (
@@ -282,6 +302,16 @@ class MemoryStore:
             UPDATE profiles
             SET affinity = COALESCE(affinity, 0) + ?,
                 last_seen = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+            """,
+            (delta, user_id),
+        )
+        self.cur.execute(
+            """
+            UPDATE user_cards
+            SET affinity = COALESCE(affinity, 0) + ?,
+                last_seen = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
             WHERE user_id = ?
             """,
             (delta, user_id),
@@ -786,6 +816,11 @@ class MemoryStore:
         first_message_id: str = "",
         last_message_id: str = "",
     ) -> None:
+        if not anchor_message_id:
+            # Preserve existing anchor if no new one provided (e.g. read returned nothing)
+            meta = self.get_channel_meta(channel_id) or {}
+            anchor_message_id = meta.get("last_read_anchor_message_id") or ""
+
         self.update_channel_meta(
             channel_id,
             last_action_type="read_channel",

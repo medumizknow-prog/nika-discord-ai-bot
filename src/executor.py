@@ -207,7 +207,7 @@ class ActionExecutor:
                 str(message.channel.id),
                 target_channel_id=str(channel.id),
                 limit=limit,
-                anchor_message_id=first_message_id, # Oldest of current batch is anchor for "earlier"
+                anchor_message_id=first_message_id, # Oldest of current batch is anchor for continuation phrases
                 first_message_id=first_message_id,
                 last_message_id=last_message_id,
             )
