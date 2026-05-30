@@ -203,9 +203,11 @@ class MemoryStore:
         # user_cards migrations
         self._ensure_column("user_cards", "interests TEXT DEFAULT ''")
         self._ensure_column("user_cards", "communication_style TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "topics TEXT DEFAULT ''")
         self._ensure_column("user_cards", "relationship_trend TEXT DEFAULT ''")
         self._ensure_column("user_cards", "activity_level TEXT DEFAULT ''")
         self._ensure_column("user_cards", "behaviors TEXT DEFAULT ''")
+        self._ensure_column("user_cards", "opinion TEXT DEFAULT ''")
 
         # other channel_meta migrations
         self._ensure_column("channel_meta", "last_action_type TEXT DEFAULT ''")
@@ -282,6 +284,16 @@ class MemoryStore:
             UPDATE profiles
             SET affinity = COALESCE(affinity, 0) + ?,
                 last_seen = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+            """,
+            (delta, user_id),
+        )
+        self.cur.execute(
+            """
+            UPDATE user_cards
+            SET affinity = COALESCE(affinity, 0) + ?,
+                last_seen = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
             WHERE user_id = ?
             """,
             (delta, user_id),

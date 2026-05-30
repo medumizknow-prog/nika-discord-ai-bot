@@ -86,6 +86,17 @@ class NikaDiscordClient(discord.Client):
 
         if not engage:
             auto = await self.planner.run_autonomy(message)
+            if auto.get("action") == "skipped":
+                return
+
+            # Record that an autonomy check was performed (regardless of outcome)
+            current_meta = self.store.get_channel_meta(channel_id) or {}
+            self.store.record_autonomy_state(
+                channel_id,
+                count=int(current_meta.get("message_count") or 0),
+                interjection_type=auto.get("action") or "",
+            )
+
             if auto.get("action") in {"react", "post_thought", "reply"}:
                 try:
                     result = await self.executor.execute(message, auto)
@@ -104,13 +115,6 @@ class NikaDiscordClient(discord.Client):
                         # Future non-silent autonomous actions may use this.
                         self.store.add_message(channel_id, guild_id, "assistant", str(self.user.id) if self.user else "", self.settings.bot_name, result["text"])
 
-                    # Mark cooldown after autonomous intervention.
-                    current_meta = self.store.get_channel_meta(channel_id) or {}
-                    self.store.record_autonomy_state(
-                        channel_id,
-                        count=int(current_meta.get("message_count") or 0),
-                        interjection_type=auto.get("action") or "",
-                    )
                 except Exception as e:
                     print(f"[AUTONOMY ERROR] {e}")
             return
